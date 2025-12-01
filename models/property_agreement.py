@@ -180,18 +180,23 @@ class PropertyAgreement(models.Model):
             else:
                 record.days_remaining = 0
     
-    @api.depends('collection_ids.amount_collected', 'collection_ids.active')
+    @api.depends('collection_ids.amount_collected', 'collection_ids.active', 'start_date')
     def _compute_payment_stats(self):
         for record in self:
             active_collections = record.collection_ids.filtered('active')
             record.total_collected = sum(active_collections.mapped('amount_collected'))
             record.last_payment_date = max(active_collections.mapped('date')) if active_collections else False
             
-            # Calculate pending amount (simplified logic)
+            # Calculate pending amount using whole complete months
             if record.state == 'active':
-                # This should be more sophisticated based on payment schedule
-                months_passed = (fields.Date.today() - record.start_date).days / 30
-                expected_amount = record.rent_amount * months_passed
+                from dateutil.relativedelta import relativedelta
+                
+                # Calculate complete months between start_date and today
+                delta = relativedelta(fields.Date.today(), record.start_date)
+                complete_months = delta.years * 12 + delta.months
+                
+                # Expected amount based on complete months only (no partial months)
+                expected_amount = record.rent_amount * complete_months
                 record.pending_amount = max(0, expected_amount - record.total_collected)
             else:
                 record.pending_amount = 0
@@ -363,7 +368,32 @@ class PropertyAgreement(models.Model):
         }
     
     def write(self, vals):
-        """Override write to invalidate tenant computed fields when active status changes"""
+        """Override write to prevent modification of critical fields when agreement is active"""
+        # Check if any record is active and trying to modify critical fields
+        critical_fields = [
+            'tenant_id', 'room_id', 'start_date', 'end_date',
+            'rent_amount', 'deposit_amount', 'parking_charges', 'parking_deposit'
+        ]
+        
+        # Check if trying to archive active agreement
+        if 'active' in vals and not vals['active']:
+            active_agreements = self.filtered(lambda a: a.state == 'active')
+            if active_agreements:
+                raise ValidationError(_(
+                    'Cannot archive active agreements! '
+                    'Please terminate the agreement first.'
+                ))
+        
+        # Check if trying to modify critical fields on active agreements
+        for field in critical_fields:
+            if field in vals:
+                active_agreements = self.filtered(lambda a: a.state == 'active')
+                if active_agreements:
+                    raise ValidationError(_(
+                        'Cannot modify %s of active agreements! '
+                        'Please terminate the agreement first if you need to make changes.'
+                    ) % field.replace('_', ' ').title())
+        
         result = super().write(vals)
         
         # If active field is being changed, invalidate tenant computed fields
@@ -374,3 +404,28 @@ class PropertyAgreement(models.Model):
                 tenants_to_recompute._compute_agreement_stats()
         
         return result
+    
+    @api.model
+    def cron_recompute_outstanding_dues(self):
+        """Cron job to recompute all outstanding dues - useful after code changes"""
+        # Recompute all active agreements
+        agreements = self.search([('state', '=', 'active')])
+        if agreements:
+            agreements._compute_payment_stats()
+        
+        # Recompute all flats
+        flats = self.env['property.flat'].search([])
+        if flats:
+            flats._compute_financial_summary()
+        
+        return True
+    
+    def unlink(self):
+        """Override unlink to prevent deletion of active agreements"""
+        active_agreements = self.filtered(lambda a: a.state == 'active')
+        if active_agreements:
+            raise ValidationError(_(
+                'Cannot delete active agreements! '
+                'Please terminate the agreement first.'
+            ))
+        return super().unlink()

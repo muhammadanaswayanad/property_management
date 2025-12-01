@@ -33,11 +33,14 @@ class PropertyFlat(models.Model):
     rooms_count = fields.Integer('Number of Rooms', compute='_compute_rooms_count', store=True)
     occupied_rooms = fields.Integer('Occupied Rooms', compute='_compute_room_stats', store=True)
     vacant_rooms = fields.Integer('Vacant Rooms', compute='_compute_room_stats', store=True)
-    total_rent = fields.Monetary('Total Rent', compute='_compute_financial', currency_field='currency_id', store=True)
+    total_rent = fields.Monetary('Total Rent', currency_field='currency_id', compute='_compute_financial', store=True)
+    total_parking_charges = fields.Monetary('Total Parking Charges', currency_field='currency_id', compute='_compute_financial', store=True)
     
     # Financial Summary
-    total_security_deposit = fields.Monetary('Total Security Deposit', compute='_compute_financial_summary', currency_field='currency_id', store=True)
-    total_outstanding_dues = fields.Monetary('Total Outstanding Dues', compute='_compute_financial_summary', currency_field='currency_id', store=True)
+    total_security_deposit = fields.Monetary('Total Security Deposit', currency_field='currency_id', 
+                                            compute='_compute_financial_summary', store=True)
+    total_outstanding_dues = fields.Monetary('Total Outstanding Dues', currency_field='currency_id', 
+                                            compute='_compute_financial_summary', store=True)
     # Parking Details
     parking_number = fields.Char('Parking Number')
     has_parking = fields.Boolean('Has Parking')
@@ -90,12 +93,14 @@ class PropertyFlat(models.Model):
             record.occupied_rooms = len(active_rooms.filtered(lambda r: r.status == 'occupied'))
             record.vacant_rooms = len(active_rooms.filtered(lambda r: r.status == 'vacant'))
     
-    @api.depends('room_ids.rent_amount', 'room_ids.status', 'room_ids.active')
+    @api.depends('room_ids.current_rent', 'room_ids.current_agreement_id.parking_charges', 'room_ids.status', 'room_ids.active')
     def _compute_financial(self):
         for record in self:
             active_rooms = record.room_ids.filtered('active')
             occupied_rooms = active_rooms.filtered(lambda r: r.status == 'occupied')
-            record.total_rent = sum(occupied_rooms.mapped('rent_amount'))
+            record.total_rent = sum(occupied_rooms.mapped('current_rent'))
+            # Sum parking charges from active agreements
+            record.total_parking_charges = sum(occupied_rooms.mapped('current_agreement_id.parking_charges'))
     
     @api.depends('room_ids.status', 'room_ids.active')
     def _compute_state(self):
@@ -123,6 +128,7 @@ class PropertyFlat(models.Model):
             record.total_security_deposit = total_deposit
             
             # Calculate total outstanding dues from active agreements
+            # Based on complete months (not fractional) minus collections
             total_dues = 0.0
             for room in active_rooms:
                 if room.current_agreement_id and room.current_agreement_id.active:

@@ -116,16 +116,7 @@
                         </group>
                         <group>
                             <field name="outstanding_status"/>
-                        </group>
-                    </group>
-                    
-                    <group name="statement_info" string="Statement Summary" invisible="status != 'active'">
-                        <group>
-                            <field name="total_debits" widget="monetary" string="Total Charges"/>
                             <field name="total_credits" widget="monetary" string="Total Payments"/>
-                        </group>
-                        <group>
-                            <field name="current_balance" widget="monetary" string="Current Balance"/>
                             <button name="action_generate_statement_report" string="Generate Statement" type="object" class="btn-secondary"/>
                         </group>
                     </group>

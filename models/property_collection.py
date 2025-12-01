@@ -92,6 +92,14 @@ class PropertyCollection(models.Model):
     invoice_reference = fields.Char('Invoice Reference')
     payment_reference = fields.Char('Payment Reference')
     
+    # Odoo Accounting Integration
+    payment_id = fields.Many2one('account.payment', 'Payment', readonly=True, 
+                                help="Linked payment record in Odoo accounting")
+    matched_invoice_ids = fields.Many2many('account.move', 'collection_invoice_rel', 
+                                          'collection_id', 'invoice_id',
+                                          string='Matched Invoices', readonly=True,
+                                          help="Invoices paid by this collection")
+    
     @api.model
     def create(self, vals):
         print("iujhygt",self.tenant_id.agreement_ids.room_id)
@@ -161,6 +169,16 @@ class PropertyCollection(models.Model):
         # Auto-create statement entry for this collection
         if collection.tenant_id and collection.status in ['collected', 'verified']:
             self.env['property.statement'].sudo().create_from_collection(collection)
+        
+        # Auto-register payment against invoices if status is collected/verified
+        if collection.status in ['collected', 'verified'] and not collection.payment_id:
+            try:
+                collection._register_payment_for_collection()
+            except Exception as e:
+                # Log error but don't block collection creation
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.warning(f"Could not register payment for collection {collection.name}: {str(e)}")
         
         return collection
     
@@ -409,9 +427,165 @@ class PropertyCollection(models.Model):
             user_id=agreement.room_id.property_id.manager_id.id,
         )
     
+    # ========== INVOICE PAYMENT INTEGRATION ==========
+    
+    # Collection type to invoice type mapping
+    COLLECTION_TO_INVOICE_TYPE = {
+        'rent': 'rent',
+        'deposit': 'deposit',
+        'parking_charges': 'parking',
+        'parking_deposit': 'parking',
+        'maintenance': 'maintenance',
+        'utility': 'utility',
+        'penalty': 'penalty',
+        'other_charges': 'other',
+        'extra': 'other',
+        'token': 'deposit',
+        'other': 'other',
+    }
+    
+    def _register_payment_for_collection(self):
+        """Register payment against matching invoices when collection is recorded"""
+        self.ensure_one()
+        
+        # Find matching unpaid invoices
+        invoices = self._find_matching_invoices()
+        
+        if not invoices:
+            # No invoices to pay - this is OK, invoice might be generated later
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.info(f"No matching invoices found for collection {self.name}")
+            return
+        
+        # Create payment record
+        payment = self._create_payment_from_collection(invoices)
+        
+        if payment:
+            # Link payment to collection
+            self.write({
+                'payment_id': payment.id,
+                'matched_invoice_ids': [(6, 0, invoices.ids)],
+                'payment_reference': payment.name,
+            })
+            
+            # Post the payment to reconcile with invoices
+            if payment.state == 'draft':
+                payment.action_post()
+    
+    def _find_matching_invoices(self):
+        """Find unpaid invoices that match this collection"""
+        self.ensure_one()
+        
+        # Map collection type to invoice type
+        invoice_type = self.COLLECTION_TO_INVOICE_TYPE.get(self.collection_type)
+        
+        if not invoice_type:
+            return self.env['account.move']
+        
+        # Build search domain
+        domain = [
+            ('tenant_id', '=', self.tenant_id.id),
+            ('move_type', '=', 'out_invoice'),
+            ('invoice_type', '=', invoice_type),
+            ('state', '=', 'posted'),
+            ('payment_state', 'in', ['not_paid', 'partial']),
+        ]
+        
+        # Add agreement filter if available
+        if self.agreement_id:
+            domain.append(('agreement_id', '=', self.agreement_id.id))
+        
+        # Add period filter for rent/parking
+        if self.collection_type in ['rent', 'parking_charges'] and self.period_from and self.period_to:
+            # Find invoices with overlapping periods
+            domain.extend([
+                ('period_from', '<=', self.period_to),
+                ('period_to', '>=', self.period_from),
+            ])
+        
+        # Search for matching invoices, oldest first
+        invoices = self.env['account.move'].search(domain, order='invoice_date asc')
+        
+        return invoices
+    
+    def _create_payment_from_collection(self, invoices):
+        """Create account.payment record from collection"""
+        self.ensure_one()
+        
+        if not invoices or not self.tenant_id or not self.tenant_id.partner_id:
+            return False
+        
+        # Determine payment journal based on payment method
+        journal = self._get_payment_journal()
+        
+        if not journal:
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.warning(f"No suitable journal found for payment method {self.payment_method}")
+            return False
+        
+        # Create payment
+        payment_vals = {
+            'payment_type': 'inbound',
+            'partner_type': 'customer',
+            'partner_id': self.tenant_id.partner_id.id,
+            'amount': self.amount_collected,
+            'date': self.date,
+            'journal_id': journal.id,
+            'ref': self.name or f"Collection {self.receipt_number}",
+            'collection_id': self.id,
+        }
+        
+        # Add tenant_id if the field exists (from our custom extension)
+        payment_vals['tenant_id'] = self.tenant_id.id
+        
+        # Create payment
+        payment = self.env['account.payment'].create(payment_vals)
+        
+        # Link payment to invoices via reconciliation
+        # This happens automatically when payment is posted via action_post()
+        # Odoo matches partner_id and reconciles outstanding receivables
+        
+        return payment
+    
+    def _get_payment_journal(self):
+        """Get appropriate journal based on payment method"""
+        self.ensure_one()
+        
+        # Map payment method to journal type
+        if self.payment_method in ['cash']:
+            journal_type = 'cash'
+        elif self.payment_method in ['bank_transfer', 'cheque', 'online', 'card']:
+            journal_type = 'bank'
+        else:
+            journal_type = 'cash'  # default
+        
+        # Find suitable journal
+        journal = self.env['account.journal'].search([
+            ('type', '=', journal_type),
+            ('company_id', '=', self.env.company.id),
+        ], limit=1)
+        
+        return journal
+    
+    # ========== END INVOICE PAYMENT INTEGRATION ==========
+    
+    
     def write(self, vals):
         """Override write to invalidate related computed fields when active status changes"""
         result = super().write(vals)
+        
+        # If status is being changed to collected/verified, register payment
+        if 'status' in vals and vals['status'] in ['collected', 'verified']:
+            for record in self:
+                if not record.payment_id:
+                    try:
+                        record._register_payment_for_collection()
+                    except Exception as e:
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.warning(f"Could not register payment for collection {record.name}: {str(e)}")
         
         # If active field is being changed, invalidate tenant and agreement computed fields
         if 'active' in vals:

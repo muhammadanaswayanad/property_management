@@ -17,8 +17,18 @@ class PropertyRoom(models.Model):
     room_type_id = fields.Many2one('property.room.type', 'Room Type', required=True)
     
     # Current Tenant & Agreement
-    current_tenant_id = fields.Many2one('property.tenant', 'Current Tenant')
-    current_agreement_id = fields.Many2one('property.agreement', 'Current Agreement')
+    current_tenant_id = fields.Many2one('property.tenant', string='Current Tenant', readonly=True, copy=False)
+    current_agreement_id = fields.Many2one('property.agreement', string='Current Agreement', readonly=True, copy=False)
+    
+    
+    # Related fields from current agreement for display in lists
+    agreement_parking_charges = fields.Monetary('Agreement Parking Charges', 
+                                                related='current_agreement_id.parking_charges', 
+                                                readonly=True, store=False)
+    agreement_deposit = fields.Monetary('Agreement Deposit', 
+                                       related='current_agreement_id.deposit_amount', 
+                                       readonly=True, store=False)
+    
     current_occupants_ids = fields.One2many('property.occupant', compute='_compute_current_occupants', 
                                             string='Room Occupants')
     occupants_count = fields.Integer('Occupants Count', compute='_compute_current_occupants')
@@ -27,6 +37,11 @@ class PropertyRoom(models.Model):
     area = fields.Float('Area (Sq.Ft.)')
     rent_amount = fields.Monetary('Monthly Rent', required=True, currency_field='currency_id', tracking=True,)
     deposit_amount = fields.Monetary('Security Deposit', currency_field='currency_id')
+    
+    # Current Rent (from active agreement if exists, otherwise base rent)
+    current_rent = fields.Monetary('Current Monthly Rent', compute='_compute_current_rent', 
+                                   currency_field='currency_id', store=False,
+                                   help="Current rent from active agreement, or base rent if no active agreement")
     
     # Parking Details
     parking_number = fields.Char('Parking Number')
@@ -137,6 +152,17 @@ class PropertyRoom(models.Model):
                 record.name = f"{record.property_id.code}-{record.flat_id.flat_number}-{record.room_number}"
             else:
                 record.name = record.room_number or 'New Room'
+    
+    @api.depends('current_agreement_id', 'current_agreement_id.rent_amount', 'rent_amount')
+    def _compute_current_rent(self):
+        """Compute current rent from active agreement or base rent"""
+        for record in self:
+            if record.current_agreement_id and record.current_agreement_id.state == 'active':
+                # Use rent from active agreement
+                record.current_rent = record.current_agreement_id.rent_amount
+            else:
+                # Use base rent from room
+                record.current_rent = record.rent_amount
     
     @api.depends('status')
     def _compute_availability(self):
@@ -263,6 +289,21 @@ class PropertyRoom(models.Model):
     
     def write(self, vals):
         """Override write to invalidate parent computed fields and auto-create agreements"""
+        # Critical fields that should not be modified when room has active agreement
+        critical_fields = ['rent_amount', 'parking_charges', 'deposit_amount', 'room_type_id']
+        
+        # Check if trying to modify critical fields on rooms with active agreements
+        if any(field in vals for field in critical_fields):
+            rooms_with_active_agreement = self.filtered(
+                lambda r: r.current_agreement_id and r.current_agreement_id.state == 'active'
+            )
+            if rooms_with_active_agreement:
+                raise ValidationError(_(
+                    'Cannot modify rent amount, parking charges, deposit amount, or room type '
+                    'for rooms with active agreements! '
+                    'Please terminate the agreement first or modify the agreement directly.'
+                ))
+        
         # Auto-create agreement when tenant is assigned to room
         # BUT only if we're not also setting current_agreement_id (which means agreement already exists)
         if 'current_tenant_id' in vals and vals['current_tenant_id'] and 'current_agreement_id' not in vals:
@@ -311,8 +352,14 @@ class PropertyRoom(models.Model):
         
         result = super().write(vals)
         
-        # If active field is being changed, invalidate parent flat and property computed fields
-        if 'active' in vals:
+        # Fields that affect flat's computed statistics
+        fields_affecting_flat = [
+            'rent_amount', 'status', 'current_tenant_id', 'current_agreement_id',
+            'parking_charges', 'active'
+        ]
+        
+        # Check if any of the critical fields were changed
+        if any(field in vals for field in fields_affecting_flat):
             # Invalidate flat computed fields
             flats_to_recompute = self.mapped('flat_id')
             if flats_to_recompute:
@@ -321,6 +368,7 @@ class PropertyRoom(models.Model):
                 flats_to_recompute._compute_room_stats()
                 flats_to_recompute._compute_financial()
                 flats_to_recompute._compute_state()
+                flats_to_recompute._compute_financial_summary()
             
             # Invalidate property computed fields
             properties_to_recompute = self.mapped('property_id')

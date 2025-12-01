@@ -29,7 +29,7 @@ class PropertyStatement(models.Model):
     running_balance = fields.Float(string='Running Balance', digits=(16, 2), compute='_compute_running_balance', store=True)
     
     room_id = fields.Many2one('property.room', string='Room')
-    agreement_id = fields.Many2one('property.agreement', string='Agreement')
+    agreement_id = fields.Many2one('property.agreement', string='Agreement', ondelete='cascade')
     collection_id = fields.Many2one('property.collection', string='Collection')
     
     currency_id = fields.Many2one('res.currency', string='Currency', 
@@ -108,9 +108,15 @@ class PropertyStatement(models.Model):
             }
             statements += self.create(vals)
         
-        # Monthly rent entries
+        # Monthly rent entries - only create up to today (never future months)
+        today = fields.Date.today()
+        
+        # Use the earlier of: agreement end_date or today
+        # This ensures we never create future charges
+        end_limit = min(agreement.end_date, today)
+        
         current_date = agreement.start_date
-        while current_date <= agreement.end_date:
+        while current_date <= end_limit:
             vals = {
                 'tenant_id': agreement.tenant_id.id,
                 'transaction_date': current_date,
@@ -147,11 +153,17 @@ class PropertyTenant(models.Model):
         for tenant in self:
             tenant.statement_count = len(tenant.statement_ids)
 
-    @api.depends('statement_ids.debit_amount', 'statement_ids.credit_amount')
+    @api.depends('statement_ids.debit_amount', 'statement_ids.credit_amount', 'statement_ids.agreement_id.state')
     def _compute_statement_totals(self):
         for tenant in self:
-            tenant.total_debits = sum(tenant.statement_ids.mapped('debit_amount'))
-            tenant.total_credits = sum(tenant.statement_ids.mapped('credit_amount'))
+            # Only count statement entries from ACTIVE agreements
+            # Exclude terminated agreements to match outstanding dues logic
+            active_statements = tenant.statement_ids.filtered(
+                lambda s: not s.agreement_id or s.agreement_id.state == 'active'
+            )
+            
+            tenant.total_debits = sum(active_statements.mapped('debit_amount'))
+            tenant.total_credits = sum(active_statements.mapped('credit_amount'))
             tenant.current_balance = tenant.total_debits - tenant.total_credits
 
     def action_view_statement(self):
@@ -193,7 +205,7 @@ class PropertyCollection(models.Model):
     def create(self, vals_list):
         collections = super().create(vals_list)
         for collection in collections:
-            if collection.tenant_id and collection.status == 'confirmed':
+            if collection.tenant_id and collection.status in ['collected', 'verified', 'deposited']:
                 statement = self.env['property.statement'].create_from_collection(collection)
                 collection.statement_id = statement.id
         return collections
@@ -201,10 +213,55 @@ class PropertyCollection(models.Model):
     def write(self, vals):
         result = super().write(vals)
         for collection in self:
-            if 'status' in vals and vals['status'] == 'confirmed' and collection.tenant_id and not collection.statement_id:
-                statement = self.env['property.statement'].create_from_collection(collection)
-                collection.statement_id = statement.id
+            if 'status' in vals and vals['status'] in ['collected', 'verified', 'deposited'] and collection.tenant_id and not collection.statement_id:
+                try:
+                    # Use savepoint to isolate constraint violations
+                    with self.env.cr.savepoint():
+                        statement = self.env['property.statement'].create_from_collection(collection)
+                        collection.statement_id = statement.id
+                except Exception as e:
+                    # Skip duplicates silently (SQL constraint violation)
+                    if 'unique_agreement_transaction' not in str(e) and 'duplicate' not in str(e).lower():
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.error(f"Failed to create statement for collection {collection.id}: {str(e)}")
         return result
+    
+    @api.model
+    def cron_create_missing_collection_statements(self):
+        """Batch create statement entries for collections without them"""
+        # Find all collected/verified/deposited collections without statement entries
+        collections = self.search([
+            ('status', 'in', ['collected', 'verified', 'deposited']),
+            ('statement_id', '=', False),
+            ('tenant_id', '!=', False)
+        ])
+        
+        created_count = 0
+        skipped_count = 0
+        for collection in collections:
+            # Use savepoint to isolate constraint violations
+            try:
+                with self.env.cr.savepoint():
+                    statement = self.env['property.statement'].create_from_collection(collection)
+                    collection.statement_id = statement.id
+                    created_count += 1
+            except Exception as e:
+                # Skip duplicates silently (SQL constraint violation)
+                error_msg = str(e)
+                if 'unique_agreement_transaction' in error_msg or 'duplicate' in error_msg.lower():
+                    skipped_count += 1
+                else:
+                    # Log other errors
+                    import logging
+                    _logger = logging.getLogger(__name__)
+                    _logger.error(f"Failed to create statement for collection {collection.id}: {error_msg}")
+        
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Created statement entries for {created_count} collections (skipped {skipped_count} duplicates)")
+        
+        return True
 
 
 class PropertyAgreement(models.Model):
@@ -234,3 +291,79 @@ class PropertyAgreement(models.Model):
                     'type': 'warning',
                 }
             }
+    
+    def write(self, vals):
+        """Auto-generate statement entries when agreement becomes active"""
+        result = super().write(vals)
+        
+        # If state changes to active and no statement entries exist, generate them
+        if 'state' in vals and vals['state'] == 'active':
+            for agreement in self:
+                if not agreement.statement_ids:
+                    self.env['property.statement'].create_from_agreement(agreement)
+        
+        return result
+    
+    @api.model
+    def cron_generate_missing_statement_entries(self):
+        """Batch generate statement entries for all agreements without them"""
+        # Find all ACTIVE agreements without statement entries
+        # Changed from 'active, terminated' to just 'active'
+        agreements = self.search([
+            ('state', '=', 'active'),
+            ('statement_ids', '=', False)
+        ])
+        
+        generated_count = 0
+        for agreement in agreements:
+            try:
+                self.env['property.statement'].create_from_agreement(agreement)
+                generated_count += 1
+            except Exception as e:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.error(f"Failed to generate statement for agreement {agreement.id}: {str(e)}")
+        
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Generated statement entries for {generated_count} out of {len(agreements)} agreements")
+        
+        return True
+    
+    @api.model
+    def cron_cleanup_and_regenerate_statement_entries(self):
+        """Clean up and regenerate all statement entries for agreements"""
+        
+        # Delete ALL rent and deposit statement entries
+        # This includes both active ones AND orphaned ones (where agreement was deleted)
+        all_statements = self.env['property.statement'].search([
+            ('transaction_type', 'in', ['rent', 'deposit'])
+            # Removed agreement_id filter to catch orphaned entries too
+        ])
+        
+        deleted_count = len(all_statements)
+        all_statements.unlink()
+        
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Deleted {deleted_count} existing statement entries (including orphaned ones)")
+        
+        # Find ONLY ACTIVE agreements (not terminated ones)
+        # This prevents duplicates from old terminated agreements
+        agreements = self.search([('state', '=', 'active')])
+        
+        regenerated_count = 0
+        for agreement in agreements:
+            try:
+                self.env['property.statement'].create_from_agreement(agreement)
+                regenerated_count += 1
+            except Exception as e:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.error(f"Failed to regenerate statement for agreement {agreement.id}: {str(e)}")
+        
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.info(f"Regenerated statement entries for {regenerated_count} active agreements")
+        
+        return True

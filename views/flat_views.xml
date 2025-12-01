@@ -66,16 +66,18 @@
                         </group>
                         <group name="financial">
                             <field name="total_rent" readonly="1"/>
+                            <field name="total_parking_charges" readonly="1"/>
                             <field name="total_security_deposit" readonly="1"/>
                             <field name="total_outstanding_dues" readonly="1"/>
                             <field name="currency_id" invisible="1"/>
-                                  <field name="has_parking"/>
-                        <field name="parking_number"/>
-                <field name="parking_charges" widget="monetary" optional="hide"/>
                         </group>
-
+                        <group name="parking_info">
+                            <field name="has_parking"/>
+                            <field name="parking_number"/>
+                            <field name="parking_charges" widget="monetary"/>
+                        </group>
                     </group>
-
+                    
                     <group name="room_stats" string="Room Statistics">
                         <group>
                             <field name="rooms_count" readonly="1"/>
@@ -91,7 +93,10 @@
                                     <field name="property_id" column_invisible="1"/>
                                     <field name="room_number"/>
                                     <field name="room_type_id"/>
-                                    <field name="rent_amount" widget="monetary"/>
+                                    <field name="current_rent" string="Monthly Rent" widget="monetary"/>
+                                    <field name="current_agreement_id" column_invisible="1"/>
+                                    <field name="agreement_parking_charges" widget="monetary" string="Parking Charges"/>
+                                    <field name="agreement_deposit" widget="monetary" string="Security Deposit"/>
                                     <field name="area"/>
                                     <field name="current_tenant_id"/>
                                     <field name="status"/>
