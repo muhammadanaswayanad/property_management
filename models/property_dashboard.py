@@ -215,10 +215,29 @@ class PropertyDashboard(models.TransientModel):
         res['month_total_credits'] = sum(month_statements.mapped('credit_amount'))
         res['month_net_balance'] = res['month_total_debits'] - res['month_total_credits']
         
-        # Tenant payment behavior analysis
+        
+        # Tenant payment behavior analysis based on statement balances
         active_tenants = self.env['property.tenant'].search([('status', '=', 'active')])
-        res['tenants_with_negative_balance'] = len(active_tenants.filtered(lambda t: t.current_balance < 0))
-        res['tenants_with_positive_balance'] = len(active_tenants.filtered(lambda t: t.current_balance > 0))
+        
+        # Count tenants with credit balance (negative running balance = advance payment)
+        # and debit balance (positive running balance = pending payment)
+        tenants_credit = 0
+        tenants_debit = 0
+        
+        for tenant in active_tenants:
+            # Get latest statement entry for this tenant to get current running balance
+            latest_statement = self.env['property.statement'].search([
+                ('tenant_id', '=', tenant.id)
+            ], order='transaction_date desc, id desc', limit=1)
+            
+            if latest_statement:
+                if latest_statement.running_balance < 0:
+                    tenants_credit += 1  # Negative balance = credit (advance payment)
+                elif latest_statement.running_balance > 0:
+                    tenants_debit += 1   # Positive balance = debit (pending payment)
+        
+        res['tenants_with_negative_balance'] = tenants_credit
+        res['tenants_with_positive_balance'] = tenants_debit
         
         # Top debtors list
         top_debtors = outstanding_dues.filtered(lambda d: d.total_outstanding > 0).sorted('total_outstanding', reverse=True)[:10]
