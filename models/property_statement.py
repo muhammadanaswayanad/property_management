@@ -38,13 +38,18 @@ class PropertyStatement(models.Model):
     @api.depends('tenant_id', 'transaction_date', 'debit_amount', 'credit_amount')
     def _compute_running_balance(self):
         for record in self:
-            # Get all previous transactions for this tenant
+            # Get all transactions for this tenant up to and including this transaction
+            # Sort by transaction_date and id to ensure chronological order
             previous_transactions = self.search([
                 ('tenant_id', '=', record.tenant_id.id),
-                ('transaction_date', '<=', record.transaction_date),
+                '|',
+                ('transaction_date', '<', record.transaction_date),
+                '&',
+                ('transaction_date', '=', record.transaction_date),
                 ('id', '<=', record.id)
             ], order='transaction_date asc, id asc')
             
+            # Calculate cumulative balance
             balance = 0.0
             for transaction in previous_transactions:
                 balance += transaction.debit_amount - transaction.credit_amount

@@ -172,16 +172,15 @@ class PropertyTenant(models.Model):
             agreement = record.current_agreement_id
             today = fields.Date.today()
             
-            # Calculate rent outstanding
+            # Calculate rent outstanding using complete months only (matching agreement logic)
             start_date = agreement.start_date
             monthly_rent = agreement.rent_amount
             
-            # Calculate expected rent based on months passed
-            months_passed = relativedelta(today, start_date).months + (relativedelta(today, start_date).years * 12)
-            if today.day >= agreement.payment_day:
-                months_passed += 1  # Include current month if past due date
+            # Calculate COMPLETE months only (no partial months)
+            delta = relativedelta(today, start_date)
+            complete_months = delta.years * 12 + delta.months
             
-            expected_rent = monthly_rent * months_passed if months_passed > 0 else 0
+            expected_rent = monthly_rent * complete_months if complete_months > 0 else 0
             
             # Calculate total rent collected
             active_collections = record.collection_ids.filtered('active')
