@@ -37,24 +37,18 @@ class PropertyStatement(models.Model):
     
     @api.depends('tenant_id', 'transaction_date', 'debit_amount', 'credit_amount')
     def _compute_running_balance(self):
-        for record in self:
-            # Get all transactions for this tenant up to and including this transaction
-            # Sort by transaction_date and id to ensure chronological order
-            previous_transactions = self.search([
-                ('tenant_id', '=', record.tenant_id.id),
-                '|',
-                ('transaction_date', '<', record.transaction_date),
-                '&',
-                ('transaction_date', '=', record.transaction_date),
-                ('id', '<=', record.id)
-            ], order='transaction_date asc, id asc')
+        # Process all statements grouped by tenant for efficiency
+        for tenant_id in self.mapped('tenant_id'):
+            # Get all statements for this tenant in chronological order
+            tenant_statements = self.filtered(lambda s: s.tenant_id == tenant_id).sorted(
+                lambda s: (s.transaction_date, s.id)
+            )
             
-            # Calculate cumulative balance
+            # Calculate running balance cumulatively
             balance = 0.0
-            for transaction in previous_transactions:
-                balance += transaction.debit_amount - transaction.credit_amount
-            
-            record.running_balance = balance
+            for statement in tenant_statements:
+                balance += statement.debit_amount - statement.credit_amount
+                statement.running_balance = balance
 
     def name_get(self):
         result = []
@@ -370,5 +364,38 @@ class PropertyAgreement(models.Model):
         import logging
         _logger = logging.getLogger(__name__)
         _logger.info(f"Regenerated statement entries for {regenerated_count} active agreements")
+        
+        return True
+    
+    @api.model
+    def cron_recalculate_running_balances(self):
+        """Recalculate running balances for all statement entries"""
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        # Get all statement entries
+        all_statements = self.env['property.statement'].search([], order='transaction_date asc, id asc')
+        
+        if not all_statements:
+            _logger.info("No statement entries found to recalculate")
+            return True
+        
+        # Group by tenant and recalculate
+        tenant_ids = all_statements.mapped('tenant_id')
+        total_updated = 0
+        
+        for tenant in tenant_ids:
+            tenant_statements = all_statements.filtered(lambda s: s.tenant_id == tenant).sorted(
+                lambda s: (s.transaction_date, s.id)
+            )
+            
+            balance = 0.0
+            for stmt in tenant_statements:
+                balance += stmt.debit_amount - stmt.credit_amount
+                # Direct write to bypass compute and update stored value
+                stmt.write({'running_balance': balance})
+                total_updated += 1
+        
+        _logger.info(f"Recalculated running balances for {total_updated} statement entries across {len(tenant_ids)} tenants")
         
         return True

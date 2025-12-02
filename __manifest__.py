@@ -67,6 +67,9 @@ Optimized for Dubai real estate market with AED currency support.
         'data/cron_generate_statement_entries.xml',
         'data/cron_create_collection_statements.xml',
         'data/cron_cleanup_statement_entries.xml',
+        'data/cron_recalculate_balances.xml',
+        'data/email_templates.xml',
+        
         # Views - Dashboard
         'views/dashboard_views.xml',
         

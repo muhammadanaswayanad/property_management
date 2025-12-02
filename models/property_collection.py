@@ -166,10 +166,6 @@ class PropertyCollection(models.Model):
         
         collection = super().create(vals)
         
-        # Auto-create statement entry for this collection
-        if collection.tenant_id and collection.status in ['collected', 'verified']:
-            self.env['property.statement'].sudo().create_from_collection(collection)
-        
         # Auto-register payment against invoices if status is collected/verified
         if collection.status in ['collected', 'verified'] and not collection.payment_id:
             try:
@@ -472,42 +468,74 @@ class PropertyCollection(models.Model):
             # Post the payment to reconcile with invoices
             if payment.state == 'draft':
                 payment.action_post()
+            
+            # Reconcile payment with invoices
+            self._reconcile_payment_with_invoices(payment, invoices)
     
     def _find_matching_invoices(self):
         """Find unpaid invoices that match this collection"""
         self.ensure_one()
         
+        import logging
+        _logger = logging.getLogger(__name__)
+        
         # Map collection type to invoice type
         invoice_type = self.COLLECTION_TO_INVOICE_TYPE.get(self.collection_type)
         
         if not invoice_type:
+            _logger.info(f"Collection {self.name}: No invoice type mapping for collection_type='{self.collection_type}'")
             return self.env['account.move']
         
-        # Build search domain
+        # Build search domain - start with basic criteria
         domain = [
             ('tenant_id', '=', self.tenant_id.id),
             ('move_type', '=', 'out_invoice'),
-            ('invoice_type', '=', invoice_type),
             ('state', '=', 'posted'),
             ('payment_state', 'in', ['not_paid', 'partial']),
         ]
         
+        _logger.info(f"Collection {self.name}: Searching for invoices with tenant={self.tenant_id.name}, type=out_invoice, state=posted")
+        
+        # Try with invoice_type first
+        domain_with_type = domain + [('invoice_type', '=', invoice_type)]
+        
         # Add agreement filter if available
         if self.agreement_id:
-            domain.append(('agreement_id', '=', self.agreement_id.id))
+            domain_with_type.append(('agreement_id', '=', self.agreement_id.id))
+            _logger.info(f"  - With agreement={self.agreement_id.name}")
         
-        # Add period filter for rent/parking
+        # Add period filter for rent/parking (optional - try with and without)
         if self.collection_type in ['rent', 'parking_charges'] and self.period_from and self.period_to:
-            # Find invoices with overlapping periods
-            domain.extend([
+            domain_with_period = domain_with_type + [
                 ('period_from', '<=', self.period_to),
                 ('period_to', '>=', self.period_from),
-            ])
+            ]
+            _logger.info(f"  - With period overlap: {self.period_from} to {self.period_to}")
+            invoices = self.env['account.move'].search(domain_with_period, order='invoice_date asc', limit=10)
+            
+            if invoices:
+                _logger.info(f"  ✓ Found {len(invoices)} invoice(s) with period matching")
+                return invoices
+            else:
+                _logger.info(f"  - No invoices found with period matching, trying without period filter...")
         
-        # Search for matching invoices, oldest first
-        invoices = self.env['account.move'].search(domain, order='invoice_date asc')
+        # Try without period filter
+        invoices = self.env['account.move'].search(domain_with_type, order='invoice_date asc', limit=10)
         
-        return invoices
+        if invoices:
+            _logger.info(f"  ✓ Found {len(invoices)} invoice(s) with invoice_type={invoice_type}")
+            return invoices
+        
+        # Try without invoice_type (more lenient)
+        _logger.info(f"  - No invoices found with invoice_type={invoice_type}, trying without invoice_type...")
+        invoices = self.env['account.move'].search(domain, order='invoice_date asc', limit=10)
+        
+        if invoices:
+            _logger.info(f"  ✓ Found {len(invoices)} invoice(s) without invoice_type filter")
+            return invoices
+        
+        _logger.info(f"  ✗ No matching invoices found for collection {self.name}")
+        return self.env['account.move']
     
     def _create_payment_from_collection(self, invoices):
         """Create account.payment record from collection"""
@@ -533,7 +561,6 @@ class PropertyCollection(models.Model):
             'amount': self.amount_collected,
             'date': self.date,
             'journal_id': journal.id,
-            'ref': self.name or f"Collection {self.receipt_number}",
             'collection_id': self.id,
         }
         
@@ -548,6 +575,46 @@ class PropertyCollection(models.Model):
         # Odoo matches partner_id and reconciles outstanding receivables
         
         return payment
+    
+    def _reconcile_payment_with_invoices(self, payment, invoices):
+        """Reconcile payment with invoices by matching receivable account lines"""
+        self.ensure_one()
+        
+        if not payment or not invoices:
+            return
+        
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        # Get receivable account from partner
+        receivable_account = self.tenant_id.partner_id.property_account_receivable_id
+        
+        if not receivable_account:
+            _logger.warning(f"No receivable account found for partner {self.tenant_id.partner_id.name}")
+            return
+        
+        # Get payment move lines (credit lines on receivable account)
+        payment_lines = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id == receivable_account and line.credit > 0 and not line.reconciled
+        )
+        
+        # Get invoice move lines (debit lines on receivable account)
+        invoice_lines = invoices.mapped('line_ids').filtered(
+            lambda line: line.account_id == receivable_account and line.debit > 0 and not line.reconciled
+        )
+        
+        if not payment_lines or not invoice_lines:
+            _logger.warning(f"Could not find unreconciled lines for payment {payment.name} and invoices {invoices.mapped('name')}")
+            return
+        
+        # Reconcile the lines
+        lines_to_reconcile = payment_lines + invoice_lines
+        
+        try:
+            lines_to_reconcile.reconcile()
+            _logger.info(f"✓ Reconciled payment {payment.name} with invoices {invoices.mapped('name')}")
+        except Exception as e:
+            _logger.error(f"Failed to reconcile payment {payment.name}: {str(e)}")
     
     def _get_payment_journal(self):
         """Get appropriate journal based on payment method"""
