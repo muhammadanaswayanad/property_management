@@ -48,14 +48,18 @@ class PropertyAgreement(models.Model):
     # Financial Terms
     rent_amount = fields.Monetary('Monthly Rent', required=True, currency_field='currency_id', tracking=True)
     deposit_amount = fields.Monetary('Security Deposit', currency_field='currency_id', tracking=True)
-    token_money = fields.Monetary('Token Money', currency_field='currency_id')
-    extra_charges = fields.Monetary('Extra Charges', currency_field='currency_id')
+    token_amount = fields.Monetary('Token Money', currency_field='currency_id', default=0.0)
+    parking_charges = fields.Monetary('Parking Charges', currency_field='currency_id', default=0.0)
+    parking_remote_deposit = fields.Monetary('Parking Remote Deposit', currency_field='currency_id', default=0.0)
     
-    # Parking Terms
-    parking_charges = fields.Monetary('Parking Charges', currency_field='currency_id', 
-                                     help="Monthly parking charges if applicable")
-    parking_deposit = fields.Monetary('Parking Remote Deposit', currency_field='currency_id',
-                                     help="One-time parking remote deposit")
+    # Other Charges (moved from above)
+    # other_charges_ids = fields.One2many('property.agreement.charges', 'agreement_id', 'Other Charges') # This field was already defined above, keeping it there.
+
+    # Opening Balance
+    opening_balance = fields.Monetary('Opening Balance', currency_field='currency_id', default=0.0,
+                                     help="Any outstanding balance from previous agreement or external sources")
+    opening_balance_recorded = fields.Boolean('Opening Balance Recorded', default=False, copy=False,
+                                              help="Tracks if opening balance has been added to statement")
 
     invoice_ids = fields.One2many('account.move', 'agreement_id', 'Invoices')
     invoices_count = fields.Integer('Invoices Count', compute='_compute_invoices_count',)
@@ -248,13 +252,13 @@ class PropertyAgreement(models.Model):
                         'Conflicting agreement: %s (from %s to %s)'
                     ) % (overlapping[0].name, overlapping[0].start_date, overlapping[0].end_date))
     
-    @api.onchange('room_id','extra_charges')
+    @api.onchange('room_id')
     def _onchange_room_id(self):
         if self.room_id:
-            self.rent_amount = self.room_id.rent_amount + (self.extra_charges or 0)
+            self.rent_amount = self.room_id.rent_amount
             self.deposit_amount = self.room_id.deposit_amount
             self.parking_charges = self.room_id.parking_charges
-            self.parking_deposit = self.room_id.parking_deposit
+            # Note: parking_remote_deposit doesn't exist on room model
             self.property_id = self.room_id.property_id
 
     @api.onchange('tenant_id')
@@ -271,6 +275,7 @@ class PropertyAgreement(models.Model):
             pass
     
     def action_activate(self):
+        """Activate agreement and create initial statement entries"""
         for record in self:
             # Update room status
             record.room_id.write({
@@ -283,14 +288,87 @@ class PropertyAgreement(models.Model):
             record.tenant_id.write({
                 'status': 'active',
                 'current_room_id': record.room_id.id,
+                'current_agreement_id': record.id,
             })
             
             record.write({'state': 'active'})
             
-            # Create invoice reference if needed
+            # Create initial statement entries for dues
+            record._create_initial_statement_entries()
+            
+            # Create monthly invoice reference
             record._create_monthly_invoice_reference()
     
+    def _create_initial_statement_entries(self):
+        """Create initial statement entries for agreement dues"""
+        self.ensure_one()
+        
+        statement_obj = self.env['property.statement']
+        today = fields.Date.today()
+        
+        # 1. Create entry for opening balance (if > 0 and not already recorded)
+        if self.opening_balance > 0 and not self.opening_balance_recorded:
+            statement_obj.create({
+                'tenant_id': self.tenant_id.id,
+                'agreement_id': self.id,
+                'transaction_date': today,
+                'reference': f'{self.name}/OPENING',
+                'description': f'Opening balance for agreement {self.name}',
+                'transaction_type': 'outstanding',
+                'debit_amount': self.opening_balance,
+                'credit_amount': 0.0,
+            })
+            # Mark as recorded so it doesn't get created again
+            self.opening_balance_recorded = True
+        
+        # 2. Create entry for security deposit (if not paid)
+        if self.deposit_amount > 0:
+            statement_obj.create({
+                'tenant_id': self.tenant_id.id,
+                'agreement_id': self.id,
+                'transaction_date': today,
+                'reference': f'{self.name}/DEPOSIT',
+                'description': f'Security deposit for agreement {self.name}',
+                'transaction_type': 'deposit',
+                'debit_amount': self.deposit_amount,
+                'credit_amount': 0.0,
+            })
+        
+        # 3. Create entry for parking charges (if > 0)
+        if self.parking_charges > 0:
+            statement_obj.create({
+                'tenant_id': self.tenant_id.id,
+                'agreement_id': self.id,
+                'transaction_date': today,
+                'reference': f'{self.name}/PARKING',
+                'description': f'Parking charges for agreement {self.name}',
+                'transaction_type': 'parking',
+                'debit_amount': self.parking_charges,
+                'credit_amount': 0.0,
+            })
+        
+        # 4. Create entries for other charges (if > 0)
+        for charge in self.other_charges_ids:
+            if charge.amount > 0:
+                statement_obj.create({
+                    'tenant_id': self.tenant_id.id,
+                    'agreement_id': self.id,
+                    'transaction_date': today,
+                    'reference': f'{self.name}/CHARGE/{charge.charge_id.name}',
+                    'description': f'{charge.charge_id.name} for agreement {self.name}',
+                    'transaction_type': 'other',
+                    'debit_amount': charge.amount,
+                    'credit_amount': 0.0,
+                })
+        
+        # Recalculate running balances for this tenant
+        tenant_statements = statement_obj.search([
+            ('tenant_id', '=', self.tenant_id.id)
+        ], order='transaction_date asc, id asc')
+        tenant_statements._compute_running_balance()
+    
     def action_terminate(self):
+        """Regular termination - just marks agreement as terminated"""
         for record in self:
             # Update room status
             record.room_id.write({
@@ -305,6 +383,24 @@ class PropertyAgreement(models.Model):
             })
             
             record.write({'state': 'terminated'})
+        return True
+    
+    def action_clean_and_terminate(self):
+        """Delete all related data and terminate the agreement"""
+        self.ensure_one()
+        
+        # Return confirmation wizard
+        return {
+            'name': _('Confirm Clean & Terminate'),
+            'type': 'ir.actions.act_window',
+            'res_model': 'property.agreement.clean.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_agreement_id': self.id,
+                'default_agreement_name': self.name,
+            }
+        }
     
     def action_renew(self):
         return {

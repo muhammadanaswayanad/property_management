@@ -74,25 +74,28 @@ Optimized for Dubai real estate market with AED currency support.
         # Views - Dashboard
         'views/dashboard_views.xml',
         
-        # Views - Base Structure
+        # Views
+        'views/menu_views.xml',
         'views/property_views.xml',
         'views/flat_views.xml',
         'views/room_views.xml',
         'views/room_type_views.xml',
-        
-        # Views - Tenant Management
-        'views/outstanding_dues_views.xml',  # Load this first so action is available
-        'views/statement_views.xml',
-        'views/tenant_views.xml',
         'views/agreement_views.xml',
+        'views/tenant_views.xml',
+        'views/collection_views.xml',
+        'views/invoice_views.xml',
+        'views/statement_views.xml',
+        'views/outstanding_dues_views.xml',
         'views/occupant_views.xml',
         'views/other_charges_views.xml',
         'views/agent_views.xml',
+        'views/agreement_clean_wizard_views.xml',
         
-        # Views - Daily Operations
-        'views/collection_views.xml',
+        # Wizards
+        'wizards/property_data_import_wizard_views.xml',
+        'views/statement_wizard_views.xml',  # Fixed path
         
-        # Reports (must come before email templates that reference them)
+        # Report templates
         'reports/invoice_reports.xml',
         
         # Email Templates (must come before views that reference them)
@@ -100,11 +103,6 @@ Optimized for Dubai real estate market with AED currency support.
         
         # Invoice views (references email templates)
         'views/invoice_views.xml',
-        
-        # Wizards
-        'wizards/property_data_import_wizard_views.xml',
-        'views/statement_wizard_views.xml',
-        
         # Menus (must come after all views that define actions)
         'views/menu_views.xml',
     ],

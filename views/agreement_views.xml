@@ -30,10 +30,13 @@
                     <button name="action_activate" type="object" string="Activate" 
                             class="oe_highlight" invisible="state != 'draft'"/>
                     <button name="action_terminate" type="object" string="Terminate" 
-                            invisible="state != 'active'"/>
+                           invisible="state != 'active'" confirm="Are you sure you want to terminate this agreement?"/>
+                    <button name="action_clean_and_terminate" string="Clean &amp; Terminate" type="object" 
+                           invisible="state != 'active'" class="btn-danger"
+                           help="Delete all statements, invoices, and collections, then terminate the agreement"/>
                     <button name="action_renew" type="object" string="Renew" 
-                            invisible="state != 'active'"/>
-                    <field name="state" widget="statusbar" statusbar_visible="draft,active,expired,terminated"/>
+                           invisible="state != 'active'" class="oe_highlight"/>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,active,terminated"/>
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
@@ -55,14 +58,19 @@
                             <field name="start_date"/>
                             <field name="end_date"/>
                         </group>
-                        <group>
-                            <field name="rent_amount"/>
-                            <field name="deposit_amount"/>
-                            <field name="token_money"/>
-                            <field name="extra_charges"/>
-                            <field name="parking_charges"/>
-                            <field name="parking_deposit"/>
-                            <field name="currency_id" invisible="1"/>
+                        <group string="Financial Terms">
+                            <group>
+                                <field name="rent_amount"/>
+                                <field name="deposit_amount"/>
+                                <field name="token_amount"/>
+                            </group>
+                            <group>
+                                <field name="parking_charges"/>
+                                <field name="parking_remote_deposit"/>
+                                <field name="opening_balance" readonly="state != 'draft'"
+                                       help="Any outstanding balance from previous agreement"/>
+                                <field name="opening_balance_recorded" invisible="1"/>
+                            </group>
                         </group>
                     </group>
                     
@@ -95,10 +103,13 @@
                                     <field name="gas_included"/>
                                 </group>
                                 <group>
-                                    <field name="internet_included"/>
-                                    <field name="parking_included"/>
-                                </group>
+                                    <field name="parking_charges"/>
+                                <field name="parking_remote_deposit"/>
+                                <field name="opening_balance" invisible="state != 'draft'"
+                                       help="Any outstanding balance from previous agreement"/>
+                                <field name="opening_balance_recorded" invisible="1"/>
                             </group>
+                        </group>
                         </page>
                         <page string="Occupants" name="occupants">
                             <group>

@@ -108,17 +108,28 @@
                         </group>
                     </group>
                     
+                    <!-- Outstanding Dues Section -->
                     <group name="outstanding_info" string="Outstanding Dues" invisible="status != 'active'">
                         <group>
-                            <field name="total_outstanding_dues" widget="monetary"/>
                             <field name="rent_outstanding" widget="monetary"/>
                             <field name="deposit_outstanding" widget="monetary"/>
                         </group>
                         <group>
-                            <field name="outstanding_status"/>
-                            <field name="total_credits" widget="monetary" string="Total Payments"/>
-                            <button name="action_generate_statement_report" string="Generate Statement" type="object" class="btn-secondary"/>
+                            <field name="parking_outstanding" widget="monetary"/>
+                            <field name="total_outstanding_dues" widget="monetary" class="oe_subtotal_footer_separator"/>
                         </group>
+                    </group>
+                    
+                    <!-- Statement Actions -->
+                    <group name="statement_actions" string="Statement Actions" invisible="status != 'active'">
+                        <div>
+                            <button name="action_generate_statement_report" string="Generate Statement" 
+                                   type="object" class="btn-primary oe_highlight" icon="fa-file-text-o"/>
+                            <button name="action_recalculate_statements" string="Recalculate Statement" 
+                                   type="object" class="btn-warning" icon="fa-refresh"
+                                   help="Delete and regenerate all statement entries"
+                                   confirm="This will delete all existing statement entries and recreate them. Continue?"/>
+                        </div>
                     </group>
                     
                     <notebook>

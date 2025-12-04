@@ -46,6 +46,7 @@ class PropertyCollection(models.Model):
         ('penalty', 'Late Payment Penalty'),
         ('maintenance', 'Maintenance Charges'),
         ('utility', 'Utility Bills'),
+        ('outstanding', 'Outstanding Balance'),
         ('other', 'Other'),
     ], string='Collection Type', required=True, default='rent')
     
@@ -178,6 +179,75 @@ class PropertyCollection(models.Model):
         
         return collection
     
+    def write(self, vals):
+        """Override write to invalidate related computed fields when active status changes"""
+        
+        # Handle cancellation - remove statement entry and reverse payment
+        if 'status' in vals and vals['status'] == 'cancelled':
+            for record in self:
+                # Delete statement entry if exists
+                if record.statement_id:
+                    record.statement_id.unlink()
+                
+                # Cancel payment if exists
+                if record.payment_id:
+                    try:
+                        # Set to draft first, then delete to avoid validation errors
+                        if record.payment_id.state == 'posted':
+                            record.payment_id.button_draft()
+                        record.payment_id.unlink()
+                    except Exception as e:
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.warning(f"Could not cancel payment for collection {record.name}: {str(e)}")
+        
+        # Handle verification - create statement and register payment
+        if 'status' in vals and vals['status'] in ['collected', 'verified', 'deposited']:
+            for record in self:
+                # Create statement entry if doesn't exist
+                if record.tenant_id and not record.statement_id:
+                    try:
+                        # Use savepoint to isolate constraint violations
+                        with self.env.cr.savepoint():
+                            statement = self.env['property.statement'].create_from_collection(record)
+                            record.statement_id = statement.id
+                    except Exception as e:
+                        # Skip duplicates silently
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.warning(f"Could not create statement for collection {record.name}: {str(e)}")
+                
+                # Register payment if doesn't exist
+                if not record.payment_id:
+                    try:
+                        record._register_payment_for_collection()
+                    except Exception as e:
+                        # Log error but don't block collection creation
+                        import logging
+                        _logger = logging.getLogger(__name__)
+                        _logger.warning(f"Could not register payment for collection {record.name}: {str(e)}")
+        
+        result = super(PropertyCollection, self).write(vals)
+        
+        # If active field is being changed, invalidate tenant and agreement computed fields
+        if 'active' in vals:
+            # Invalidate tenant computed fields
+            tenants_to_recompute = self.mapped('tenant_id')
+            if tenants_to_recompute:
+                tenants_to_recompute._compute_payment_stats()
+            
+            # Invalidate agreement computed fields
+            agreements_to_recompute = self.mapped('agreement_id')
+            if agreements_to_recompute:
+                agreements_to_recompute._compute_payment_stats()
+            
+            # Invalidate room computed fields
+            rooms_to_recompute = self.mapped('room_id')
+            if rooms_to_recompute:
+                rooms_to_recompute._compute_payment_stats()
+        
+        return result
+
     @api.onchange('date', 'collection_type')
     def _onchange_date_collection_type(self):
         """Auto-calculate rent period based on collection date and type"""
@@ -637,38 +707,3 @@ class PropertyCollection(models.Model):
         return journal
     
     # ========== END INVOICE PAYMENT INTEGRATION ==========
-    
-    
-    def write(self, vals):
-        """Override write to invalidate related computed fields when active status changes"""
-        result = super().write(vals)
-        
-        # If status is being changed to collected/verified, register payment
-        if 'status' in vals and vals['status'] in ['collected', 'verified']:
-            for record in self:
-                if not record.payment_id:
-                    try:
-                        record._register_payment_for_collection()
-                    except Exception as e:
-                        import logging
-                        _logger = logging.getLogger(__name__)
-                        _logger.warning(f"Could not register payment for collection {record.name}: {str(e)}")
-        
-        # If active field is being changed, invalidate tenant and agreement computed fields
-        if 'active' in vals:
-            # Invalidate tenant computed fields
-            tenants_to_recompute = self.mapped('tenant_id')
-            if tenants_to_recompute:
-                tenants_to_recompute._compute_payment_stats()
-            
-            # Invalidate agreement computed fields
-            agreements_to_recompute = self.mapped('agreement_id')
-            if agreements_to_recompute:
-                agreements_to_recompute._compute_payment_stats()
-            
-            # Invalidate room computed fields
-            rooms_to_recompute = self.mapped('room_id')
-            if rooms_to_recompute:
-                rooms_to_recompute._compute_financial_stats()
-        
-        return result

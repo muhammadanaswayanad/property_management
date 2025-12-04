@@ -85,17 +85,19 @@ class PropertyTenant(models.Model):
     last_payment_date = fields.Date('Last Payment', compute='_compute_payment_stats')
     
     # Outstanding Dues
-    total_outstanding_dues = fields.Monetary('Total Outstanding', compute='_compute_outstanding_dues', currency_field='currency_id')
-    rent_outstanding = fields.Monetary('Rent Outstanding', compute='_compute_outstanding_dues', currency_field='currency_id')
-    deposit_outstanding = fields.Monetary('Deposit Outstanding', compute='_compute_outstanding_dues', currency_field='currency_id')
+    total_outstanding_dues = fields.Monetary('Total Outstanding', currency_field='currency_id', 
+                                            compute='_compute_outstanding_dues', store=True)
+    rent_outstanding = fields.Monetary('Rent Outstanding', currency_field='currency_id', 
+                                      compute='_compute_outstanding_dues', store=True)
+    deposit_outstanding = fields.Monetary('Deposit Outstanding', currency_field='currency_id', 
+                                         compute='_compute_outstanding_dues', store=True)
+    parking_outstanding = fields.Monetary('Parking Outstanding', currency_field='currency_id', 
+                                         compute='_compute_outstanding_dues', store=True)
     outstanding_status = fields.Selection([
         ('current', 'Current'),
-        ('overdue_30', 'Overdue (1-30 days)'),
-        ('overdue_60', 'Overdue (31-60 days)'),
-        ('overdue_90', 'Overdue (61-90 days)'),
-        ('overdue_90plus', 'Overdue (90+ days)'),
-        ('critical', 'Critical (180+ days)'),
-    ], string='Outstanding Status', compute='_compute_outstanding_dues')
+        ('overdue', 'Overdue'),
+        ('critical', 'Critical'),
+    ], string='Outstanding Status', compute='_compute_outstanding_dues', store=True)
     
     # Financial
     currency_id = fields.Many2one('res.currency', 'Currency', 
@@ -130,13 +132,16 @@ class PropertyTenant(models.Model):
             else:
                 record.current_room_number = ""
     
-    @api.depends('agreement_ids', 'agreement_ids.state', 'current_room_id')
+    @api.depends('agreement_ids', 'agreement_ids.state', 'agreement_ids.start_date', 'agreement_ids.end_date')
     def _compute_current_agreement(self):
+        """Compute the current active agreement for the tenant"""
         for record in self:
-            # Find active agreement for current room
+            # Find active agreements ordered by start date (most recent first)
             current_agreement = record.agreement_ids.filtered(
-                lambda a: a.state == 'active' and a.room_id == record.current_room_id
-            )
+                lambda a: a.state == 'active'
+            ).sorted('start_date', reverse=True)
+            
+            # Set the most recent active agreement as current
             record.current_agreement_id = current_agreement[0] if current_agreement else False
     
     @api.depends('agreement_ids.state', 'agreement_ids.active')
@@ -195,8 +200,14 @@ class PropertyTenant(models.Model):
             total_deposit_collected = sum(deposit_collections.mapped('amount_collected'))
             deposit_outstanding = max(0, expected_deposit - total_deposit_collected)
             
+            # Calculate parking outstanding
+            expected_parking = agreement.parking_charges if hasattr(agreement, 'parking_charges') else 0
+            parking_collections = active_collections.filtered(lambda c: c.collection_type == 'parking')
+            total_parking_collected = sum(parking_collections.mapped('amount_collected'))
+            parking_outstanding = max(0, expected_parking - total_parking_collected)
+            
             # Total outstanding
-            total_outstanding = rent_outstanding + deposit_outstanding
+            total_outstanding = rent_outstanding + deposit_outstanding + parking_outstanding
             
             # Calculate status based on last payment
             last_payment_date = max(active_collections.mapped('date')) if active_collections else agreement.start_date
@@ -204,20 +215,15 @@ class PropertyTenant(models.Model):
             
             if total_outstanding <= 0:
                 outstanding_status = 'current'
-            elif days_overdue <= 30:
-                outstanding_status = 'overdue_30'
-            elif days_overdue <= 60:
-                outstanding_status = 'overdue_60'
             elif days_overdue <= 90:
-                outstanding_status = 'overdue_90'
-            elif days_overdue <= 180:
-                outstanding_status = 'overdue_90plus'
+                outstanding_status = 'overdue'
             else:
                 outstanding_status = 'critical'
             
             record.total_outstanding_dues = total_outstanding
             record.rent_outstanding = rent_outstanding
             record.deposit_outstanding = deposit_outstanding
+            record.parking_outstanding = parking_outstanding
             record.outstanding_status = outstanding_status
     # @api.depends('current_agreement_id', 'collection_ids.amount_collected', 'collection_ids.date', 'collection_ids.active')
     # def _compute_outstanding_dues(self):
@@ -423,3 +429,68 @@ class PropertyTenant(models.Model):
             name = f"{record.name} ({record.mobile})"
             result.append((record.id, name))
         return result
+    
+    def action_recalculate_statements(self):
+        """Recalculate statement entries for this tenant"""
+        self.ensure_one()
+        
+        # Get current agreement
+        if not self.current_agreement_id:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('No Active Agreement'),
+                    'message': _('This tenant has no active agreement.'),
+                    'type': 'warning',
+                }
+            }
+        
+        agreement = self.current_agreement_id
+        
+        # Only delete INVOICE-based statements (not collection statements)
+        # This preserves the link between collections and their statement entries
+        invoice_statements = self.env['property.statement'].search([
+            ('tenant_id', '=', self.id),
+            ('transaction_type', 'in', ['invoice', 'rent', 'deposit', 'parking', 'other']),
+            ('collection_id', '=', False)  # Only delete statements NOT linked to collections
+        ])
+        
+        count_deleted = len(invoice_statements)
+        invoice_statements.unlink()
+        
+        # Recreate invoice-based statements from agreement
+        self.env['property.statement'].create_from_agreement(agreement)
+        
+        # Recreate missing collection statements for verified/collected/deposited collections
+        collections_needing_statements = self.env['property.collection'].search([
+            ('tenant_id', '=', self.id),
+            ('status', 'in', ['collected', 'verified', 'deposited']),
+            ('statement_id', '=', False)  # Collections missing statement entries
+        ])
+        
+        count_collections_fixed = 0
+        for collection in collections_needing_statements:
+            try:
+                statement = self.env['property.statement'].create_from_collection(collection)
+                collection.statement_id = statement.id
+                count_collections_fixed += 1
+            except Exception as e:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.warning(f"Could not create statement for collection {collection.name}: {str(e)}")
+        
+        # Recalculate running balances for ALL statements
+        all_statements = self.env['property.statement'].search([
+            ('tenant_id', '=', self.id)
+        ], order='transaction_date asc, id asc')
+        all_statements._compute_running_balance()
+        
+        message = _('Recalculated %d invoice statements.') % count_deleted
+        if count_collections_fixed > 0:
+            message += _(' Recreated %d missing collection entries.') % count_collections_fixed
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'reload',
+        }
