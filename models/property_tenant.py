@@ -70,7 +70,7 @@ class PropertyTenant(models.Model):
     current_room_number = fields.Char('Current Room Number', compute='_compute_current_room_info', store=True)
     current_flat_id = fields.Many2one('property.flat', 'Current Flat', compute='_compute_current_location', store=True)
     current_property_id = fields.Many2one('property.property', 'Current Property', compute='_compute_current_location', store=True)
-    current_agreement_id = fields.Many2one('property.agreement', 'Current Agreement', compute='_compute_current_agreement', store=True)
+    current_agreement_id = fields.Many2one('property.agreement', 'Current Agreement', compute='_compute_current_agreement')
     agreement_ids = fields.One2many('property.agreement', 'tenant_id', 'Agreements')
     collection_ids = fields.One2many('property.collection', 'tenant_id', 'Collections')
     

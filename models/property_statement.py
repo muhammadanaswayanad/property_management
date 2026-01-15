@@ -324,18 +324,6 @@ class PropertyAgreement(models.Model):
                 }
             }
     
-    def write(self, vals):
-        """Auto-generate statement entries when agreement becomes active"""
-        result = super().write(vals)
-        
-        # If state changes to active and no statement entries exist, generate them
-        if 'state' in vals and vals['state'] == 'active':
-            for agreement in self:
-                if not agreement.statement_ids:
-                    self.env['property.statement'].create_from_agreement(agreement)
-        
-        return result
-    
     @api.model
     def cron_generate_missing_statement_entries(self):
         """Batch generate statement entries for all agreements without them"""
