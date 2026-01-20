@@ -360,12 +360,6 @@ class PropertyAgreement(models.Model):
                     'debit_amount': charge.amount,
                     'credit_amount': 0.0,
                 })
-        
-        # Recalculate running balances for this tenant
-        tenant_statements = statement_obj.search([
-            ('tenant_id', '=', self.tenant_id.id)
-        ], order='transaction_date asc, id asc')
-        tenant_statements._compute_running_balance()
     
     def action_terminate(self):
         """Regular termination - just marks agreement as terminated"""

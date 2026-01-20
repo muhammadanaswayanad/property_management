@@ -60,7 +60,7 @@ class PropertyCollection(models.Model):
         ('verified', 'Verified'),
         ('deposited', 'Deposited'),
         ('cancelled', 'Cancelled'),
-    ], string='Status', default='collected', tracking=True)
+    ], string='Status', default='draft', tracking=True)
     
     # Additional Information
     notes = fields.Text('Notes')
@@ -167,8 +167,8 @@ class PropertyCollection(models.Model):
         
         collection = super().create(vals)
         
-        # Auto-register payment against invoices if status is collected/verified
-        if collection.status in ['collected', 'verified'] and not collection.payment_id:
+        # Only register payment for verified/deposited collections
+        if collection.status in ['verified', 'deposited'] and not collection.payment_id:
             try:
                 collection._register_payment_for_collection()
             except Exception as e:

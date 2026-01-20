@@ -36,29 +36,34 @@ class PropertyStatement(models.Model):
     
     @api.depends('tenant_id', 'transaction_date', 'debit_amount', 'credit_amount')
     def _compute_running_balance(self):
-        # Process each statement individually to ensure correct chronological balance
+        """Compute running balance for statement entries using batch processing"""
+        # Group records by tenant for efficient batch processing
+        records_by_tenant = {}
         for record in self:
             if not record.tenant_id:
                 record.running_balance = 0.0
                 continue
-            
-            # Search ALL statements for this tenant up to and including this one
-            # Order by date first, then by ID for same-date transactions
-            previous_statements = self.search([
-                ('tenant_id', '=', record.tenant_id.id),
-                '|',
-                ('transaction_date', '<', record.transaction_date),
-                '&',
-                ('transaction_date', '=', record.transaction_date),
-                ('id', '<=', record.id)
+            if record.tenant_id.id not in records_by_tenant:
+                records_by_tenant[record.tenant_id.id] = []
+            records_by_tenant[record.tenant_id.id].append(record)
+        
+        # Process each tenant's statements as a batch
+        for tenant_id, records in records_by_tenant.items():
+            # Get ALL statements for this tenant, ordered correctly
+            all_statements = self.search([
+                ('tenant_id', '=', tenant_id)
             ], order='transaction_date asc, id asc')
             
-            # Calculate cumulative balance
+            # Calculate running balances in a single pass
             balance = 0.0
-            for stmt in previous_statements:
+            balance_map = {}
+            for stmt in all_statements:
                 balance += stmt.debit_amount - stmt.credit_amount
+                balance_map[stmt.id] = balance
             
-            record.running_balance = balance
+            # Apply calculated balances to the records being computed
+            for record in records:
+                record.running_balance = balance_map.get(record.id, 0.0)
 
     def name_get(self):
         result = []
@@ -214,7 +219,8 @@ class PropertyCollection(models.Model):
     def create(self, vals_list):
         collections = super().create(vals_list)
         for collection in collections:
-            if collection.tenant_id and collection.status in ['collected', 'verified', 'deposited']:
+            # Only create statement for verified/deposited collections
+            if collection.tenant_id and collection.status in ['verified', 'deposited']:
                 statement = self.env['property.statement'].create_from_collection(collection)
                 collection.statement_id = statement.id
         return collections
