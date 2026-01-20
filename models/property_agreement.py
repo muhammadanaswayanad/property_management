@@ -473,6 +473,12 @@ class PropertyAgreement(models.Model):
                     'Cannot archive active agreements! '
                     'Please terminate the agreement first.'
                 ))
+            
+            # Delete outstanding dues records for archived agreements
+            outstanding_dues = self.env['property.outstanding.dues'].search([
+                ('agreement_id', 'in', self.ids)
+            ])
+            outstanding_dues.unlink()
         
         # Check if trying to modify critical fields on active agreements
         for field in critical_fields:

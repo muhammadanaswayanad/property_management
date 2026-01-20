@@ -121,6 +121,7 @@ class PropertyOutstandingDues(models.Model):
         
         # Get all active tenants with current agreements
         tenants = self.env['property.tenant'].search([
+            ('active', '=', True),  # Filter archived tenants
             ('status', '=', 'active'),
             ('current_room_id', '!=', False),
             ('current_agreement_id', '!=', False)
@@ -128,7 +129,7 @@ class PropertyOutstandingDues(models.Model):
         
         for tenant in tenants:
             agreement = tenant.current_agreement_id
-            if not agreement or agreement.state != 'active':
+            if not agreement or agreement.state != 'active' or not agreement.active:
                 continue
             
             # Calculate outstanding amounts
@@ -140,7 +141,8 @@ class PropertyOutstandingDues(models.Model):
             # Get last payment date
             last_collection = self.env['property.collection'].search([
                 ('tenant_id', '=', tenant.id),
-                ('active', '=', True)
+                ('active', '=', True),
+                ('agreement_id.active', '=', True)  # Exclude archived agreements
             ], limit=1, order='date desc')
             
             last_payment_date = last_collection.date if last_collection else agreement.start_date
@@ -164,6 +166,7 @@ class PropertyOutstandingDues(models.Model):
         unpaid_invoices = self.env['account.move'].search([
             ('tenant_id', '=', tenant.id),
             ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
             ('move_type', '=', 'out_invoice'),
             ('invoice_type', '=', 'rent'),
             ('state', '=', 'posted'),
@@ -181,6 +184,7 @@ class PropertyOutstandingDues(models.Model):
         unpaid_invoices = self.env['account.move'].search([
             ('tenant_id', '=', tenant.id),
             ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
             ('move_type', '=', 'out_invoice'),
             ('invoice_type', '=', 'deposit'),
             ('state', '=', 'posted'),
@@ -198,6 +202,7 @@ class PropertyOutstandingDues(models.Model):
         unpaid_invoices = self.env['account.move'].search([
             ('tenant_id', '=', tenant.id),
             ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
             ('move_type', '=', 'out_invoice'),
             ('invoice_type', 'in', ['parking', 'parking_charges']),
             ('state', '=', 'posted'),
@@ -215,6 +220,7 @@ class PropertyOutstandingDues(models.Model):
         unpaid_invoices = self.env['account.move'].search([
             ('tenant_id', '=', tenant.id),
             ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
             ('move_type', '=', 'out_invoice'),
             ('invoice_type', 'in', ['maintenance', 'utility', 'penalty', 'other']),
             ('state', '=', 'posted'),

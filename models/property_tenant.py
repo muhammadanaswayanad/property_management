@@ -388,6 +388,13 @@ class PropertyTenant(models.Model):
         # Sync changes to partner
         result = super(PropertyTenant, self).write(vals)
         
+        # If tenant is archived, delete outstanding dues records
+        if 'active' in vals and not vals['active']:
+            outstanding_dues = self.env['property.outstanding.dues'].search([
+                ('tenant_id', 'in', self.ids)
+            ])
+            outstanding_dues.unlink()
+        
         for record in self:
             if record.partner_id:
                 partner_vals = {}
