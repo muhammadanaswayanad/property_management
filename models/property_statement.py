@@ -395,3 +395,84 @@ class PropertyAgreement(models.Model):
         _logger.info(f"Regenerated statement entries for {regenerated_count} active agreements")
         
         return True
+    
+    @api.model
+    def cron_update_statement_entries(self):
+        """Update statement entries for all active agreements - add missing monthly rent entries"""
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        # Find all ACTIVE agreements
+        agreements = self.search([('state', '=', 'active'), ('active', '=', True)])
+        
+        total_created = 0
+        agreements_updated = 0
+        
+        for agreement in agreements:
+            try:
+                # Get existing rent statement entries for this agreement
+                existing_statements = self.env['property.statement'].search([
+                    ('agreement_id', '=', agreement.id),
+                    ('transaction_type', '=', 'rent')
+                ], order='transaction_date desc')
+                
+                # Determine the starting point for new entries
+                today = fields.Date.today()
+                end_limit = min(agreement.end_date, today)
+                
+                if existing_statements:
+                    # Get the last rent entry date
+                    last_rent_date = existing_statements[0].transaction_date
+                    # Start from the month AFTER the last entry
+                    if last_rent_date.month == 12:
+                        start_date = last_rent_date.replace(year=last_rent_date.year + 1, month=1)
+                    else:
+                        start_date = last_rent_date.replace(month=last_rent_date.month + 1)
+                else:
+                    # No existing rent entries, start from agreement start
+                    start_date = agreement.start_date
+                
+                # Create missing rent entries
+                current_date = start_date
+                created_count = 0
+                
+                while current_date <= end_limit:
+                    # Check if an entry already exists for this month (safety check)
+                    existing = self.env['property.statement'].search([
+                        ('agreement_id', '=', agreement.id),
+                        ('transaction_type', '=', 'rent'),
+                        ('transaction_date', '=', current_date)
+                    ], limit=1)
+                    
+                    if not existing:
+                        vals = {
+                            'tenant_id': agreement.tenant_id.id,
+                            'transaction_date': current_date,
+                            'reference': f"AGR/{agreement.id}/RENT/{current_date.strftime('%Y%m')}",
+                            'description': f"Monthly rent for {current_date.strftime('%B %Y')}",
+                            'transaction_type': 'rent',
+                            'debit_amount': agreement.rent_amount,
+                            'credit_amount': 0.0,
+                            'room_id': agreement.room_id.id,
+                            'agreement_id': agreement.id,
+                        }
+                        self.env['property.statement'].create(vals)
+                        created_count += 1
+                        total_created += 1
+                    
+                    # Move to next month
+                    if current_date.month == 12:
+                        current_date = current_date.replace(year=current_date.year + 1, month=1)
+                    else:
+                        current_date = current_date.replace(month=current_date.month + 1)
+                
+                if created_count > 0:
+                    agreements_updated += 1
+                    _logger.info(f"Created {created_count} missing statement entries for agreement {agreement.id}")
+                    
+            except Exception as e:
+                _logger.error(f"Failed to update statement for agreement {agreement.id}: {str(e)}")
+        
+        _logger.info(f"Statement update complete: {total_created} entries created for {agreements_updated} agreements")
+        
+        return True
