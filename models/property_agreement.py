@@ -509,6 +509,11 @@ class PropertyAgreement(models.Model):
         if agreements:
             agreements._compute_payment_stats()
         
+        # Recompute all tenants (this updates rent_outstanding, deposit_outstanding, etc.)
+        tenants = self.env['property.tenant'].search([('active', '=', True)])
+        if tenants:
+            tenants._compute_outstanding_dues()
+        
         # Recompute all flats
         flats = self.env['property.flat'].search([])
         if flats:

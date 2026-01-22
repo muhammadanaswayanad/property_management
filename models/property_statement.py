@@ -151,6 +151,29 @@ class PropertyStatement(models.Model):
                 current_date = current_date.replace(month=current_date.month + 1)
         
         return statements
+    
+    @api.model
+    def cron_recalculate_running_balances(self):
+        """Recalculate running balances for all statement entries"""
+        import logging
+        _logger = logging.getLogger(__name__)
+        
+        # Get all statement entries
+        all_statements = self.env['property.statement'].search([], order='transaction_date asc, id asc')
+        
+        if not all_statements:
+            _logger.info("No statement entries found to recalculate")
+            return True
+        
+        _logger.info(f"Recalculating running balances for {len(all_statements)} statements...")
+        
+        # Trigger recomputation for all statements
+        # This will use the _compute_running_balance method
+        all_statements._compute_running_balance()
+        
+        _logger.info(f"Running balances recalculated successfully")
+        
+        return True
 
 
 class PropertyTenant(models.Model):
@@ -278,28 +301,7 @@ class PropertyCollection(models.Model):
         
         return True
     
-    @api.model
-    def cron_recalculate_running_balances(self):
-        """Recalculate running balances for all statement entries"""
-        import logging
-        _logger = logging.getLogger(__name__)
-        
-        # Get all statement entries
-        all_statements = self.search([], order='transaction_date asc, id asc')
-        
-        if not all_statements:
-            _logger.info("No statement entries found to recalculate")
-            return True
-        
-        _logger.info(f"Recalculating running balances for {len(all_statements)} statements...")
-        
-        # Trigger recomputation for all statements
-        # This will use the _compute_running_balance method
-        all_statements._compute_running_balance()
-        
-        _logger.info(f"Running balances recalculated successfully")
-        
-        return True
+
 
 
 class PropertyAgreement(models.Model):
