@@ -103,7 +103,6 @@ class PropertyCollection(models.Model):
     
     @api.model
     def create(self, vals):
-        print("iujhygt",self.tenant_id.agreement_ids.room_id)
         # Generate receipt number for new collections
         if not vals.get('receipt_number'):
             sequence = self.env['ir.sequence'].next_by_code('property.collection') or '/'

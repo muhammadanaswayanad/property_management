@@ -130,7 +130,6 @@ class PropertyRoom(models.Model):
 
     @api.onchange('cleaning_charges', 'maintenance_charges', 'extra_person_charges', 'utility_charges',
                   'base_rent_amount')
-    @api.onchange('cleaning_charges', 'maintenance_charges', 'extra_person_charges', 'utility_charges')
     def _onchange_charges(self):
         for rec in self:
             # Start from the original rent (before extra charges)
@@ -208,7 +207,7 @@ class PropertyRoom(models.Model):
                     ('tenant_id', '=', record.current_tenant_id.id),
                     ('agreement_id', '=', record.current_agreement_id.id if record.current_agreement_id else False)
                 ], limit=1)
-                record.outstanding_amount = outstanding_dues.outstanding_balance if outstanding_dues else 0
+                record.outstanding_amount = outstanding_dues.total_outstanding if outstanding_dues else 0
             else:
                 record.outstanding_amount = 0
     
