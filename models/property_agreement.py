@@ -184,23 +184,22 @@ class PropertyAgreement(models.Model):
             else:
                 record.days_remaining = 0
     
-    @api.depends('collection_ids.amount_collected', 'collection_ids.active', 'start_date')
+    @api.depends('collection_ids.amount_collected', 'collection_ids.status', 'collection_ids.active', 'start_date')
     def _compute_payment_stats(self):
         for record in self:
-            active_collections = record.collection_ids.filtered('active')
+            # Only count VERIFIED collections
+            active_collections = record.collection_ids.filtered(lambda c: c.active and c.status == 'verified')
             record.total_collected = sum(active_collections.mapped('amount_collected'))
             record.last_payment_date = max(active_collections.mapped('date')) if active_collections else False
             
-            # Calculate pending amount using whole complete months
+            # Calculate pending amount using STATEMENT ENTRIES (not complete months)
             if record.state == 'active':
-                from dateutil.relativedelta import relativedelta
-                
-                # Calculate complete months between start_date and today
-                delta = relativedelta(fields.Date.today(), record.start_date)
-                complete_months = delta.years * 12 + delta.months
-                
-                # Expected amount based on complete months only (no partial months)
-                expected_amount = record.rent_amount * complete_months
+                # Get expected rent from statement entries
+                rent_statements = self.env['property.statement'].search([
+                    ('agreement_id', '=', record.id),
+                    ('transaction_type', '=', 'rent')
+                ])
+                expected_amount = sum(rent_statements.mapped('debit_amount'))
                 record.pending_amount = max(0, expected_amount - record.total_collected)
             else:
                 record.pending_amount = 0

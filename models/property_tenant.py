@@ -161,7 +161,7 @@ class PropertyTenant(models.Model):
             else:
                 record.last_payment_date = False
     
-    @api.depends('current_agreement_id', 'collection_ids.amount_collected', 'collection_ids.date', 'collection_ids.active')
+    @api.depends('current_agreement_id', 'collection_ids.amount_collected', 'collection_ids.date', 'collection_ids.status', 'collection_ids.active')
     def _compute_outstanding_dues(self):
         from datetime import datetime
         from dateutil.relativedelta import relativedelta
@@ -171,37 +171,49 @@ class PropertyTenant(models.Model):
                 record.total_outstanding_dues = 0
                 record.rent_outstanding = 0
                 record.deposit_outstanding = 0
+                record.parking_outstanding = 0
                 record.outstanding_status = 'current'
                 continue
             
             agreement = record.current_agreement_id
             today = fields.Date.today()
             
-            # Calculate rent outstanding using complete months only (matching agreement logic)
-            start_date = agreement.start_date
-            monthly_rent = agreement.rent_amount
+            # Calculate expected rent based on STATEMENT ENTRIES (not complete months)
+            # This ensures the outstanding matches what's actually charged
+            rent_statements = self.env['property.statement'].search([
+                ('tenant_id', '=', record.id),
+                ('agreement_id', '=', agreement.id),
+                ('transaction_type', '=', 'rent')
+            ])
+            expected_rent = sum(rent_statements.mapped('debit_amount'))
             
-            # Calculate COMPLETE months only (no partial months)
-            delta = relativedelta(today, start_date)
-            complete_months = delta.years * 12 + delta.months
-            
-            expected_rent = monthly_rent * complete_months if complete_months > 0 else 0
-            
-            # Calculate total rent collected
-            active_collections = record.collection_ids.filtered('active')
+            # Calculate total rent collected - ONLY VERIFIED COLLECTIONS
+            active_collections = record.collection_ids.filtered(lambda c: c.active and c.status == 'verified')
             rent_collections = active_collections.filtered(lambda c: c.collection_type == 'rent')
             total_rent_collected = sum(rent_collections.mapped('amount_collected'))
             
             rent_outstanding = max(0, expected_rent - total_rent_collected)
             
             # Calculate deposit outstanding
-            expected_deposit = agreement.deposit_amount
+            deposit_statements = self.env['property.statement'].search([
+                ('tenant_id', '=', record.id),
+                ('agreement_id', '=', agreement.id),
+                ('transaction_type', '=', 'deposit')
+            ])
+            expected_deposit = sum(deposit_statements.mapped('debit_amount'))
+            
             deposit_collections = active_collections.filtered(lambda c: c.collection_type == 'deposit')
             total_deposit_collected = sum(deposit_collections.mapped('amount_collected'))
             deposit_outstanding = max(0, expected_deposit - total_deposit_collected)
             
             # Calculate parking outstanding
-            expected_parking = agreement.parking_charges if hasattr(agreement, 'parking_charges') else 0
+            parking_statements = self.env['property.statement'].search([
+                ('tenant_id', '=', record.id),
+                ('agreement_id', '=', agreement.id),
+                ('transaction_type', '=', 'parking')
+            ])
+            expected_parking = sum(parking_statements.mapped('debit_amount'))
+            
             parking_collections = active_collections.filtered(lambda c: c.collection_type == 'parking')
             total_parking_collected = sum(parking_collections.mapped('amount_collected'))
             parking_outstanding = max(0, expected_parking - total_parking_collected)
