@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_property_deposit_adjust_wizard_form" model="ir.ui.view">
+        <field name="name">property.deposit.adjust.wizard.form</field>
+        <field name="model">property.deposit.adjust.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Adjust Deposit">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="agreement_id" readonly="1"/>
+                            <field name="tenant_id"/>
+                            <field name="date"/>
+                        </group>
+                        <group>
+                            <field name="rent_outstanding"/>
+                            <field name="deposit_held"/>
+                        </group>
+                    </group>
+                    <group>
+                        <label for="amount" string="Adjustment Amount"/>
+                        <div class="o_row">
+                            <field name="amount"/>
+                            <field name="currency_id" invisible="1"/>
+                        </div>
+                        <field name="description"/>
+                    </group>
+                    <div class="alert alert-warning" role="alert" invisible="amount &lt;= deposit_held">
+                        <i class="fa fa-warning"/> Warning: Adjustment amount exceeds total deposit!
+                    </div>
+                </sheet>
+                <footer>
+                    <button name="action_confirm" string="Confirm Adjustment" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_property_deposit_adjust_wizard" model="ir.actions.act_window">
+        <field name="name">Adjust Deposit</field>
+        <field name="res_model">property.deposit.adjust.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

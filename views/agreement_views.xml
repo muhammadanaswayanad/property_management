@@ -36,6 +36,8 @@
                            help="Delete all statements, invoices, and collections, then terminate the agreement"/>
                     <button name="action_renew" type="object" string="Renew" 
                            invisible="state != 'active'" class="oe_highlight"/>
+                    <button name="action_adjust_deposit" type="object" string="Adjust Deposit" 
+                           invisible="state != 'active' or deposit_amount == 0"/>
                     <field name="state" widget="statusbar" statusbar_visible="draft,active,terminated"/>
                 </header>
                 <sheet>

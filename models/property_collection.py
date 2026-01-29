@@ -30,6 +30,7 @@ class PropertyCollection(models.Model):
         ('cheque', 'Cheque'),
         ('online', 'Online Payment'),
         ('card', 'Card Payment'),
+        ('deposit_adjustment', 'Deposit Adjustment'),
     ], string='Payment Method', required=True, default='cash', tracking=True)
     
     reference_number = fields.Char('Reference Number', help="Cheque number, transaction ID, etc.")
@@ -706,6 +707,16 @@ class PropertyCollection(models.Model):
             journal_type = 'cash'
         elif self.payment_method in ['bank_transfer', 'cheque', 'online', 'card']:
             journal_type = 'bank'
+        elif self.payment_method == 'deposit_adjustment':
+            # Try to find a journal specifically for Deposit Adjustments
+            journal = self.env['account.journal'].search([
+                ('type', 'in', ['cash', 'bank', 'general']), # Accept general if possible, but payment needs cash/bank usually
+                ('name', 'ilike', 'Deposit'),
+                ('company_id', '=', self.env.company.id),
+            ], limit=1)
+            if journal:
+                return journal
+            journal_type = 'cash' # Fallback
         else:
             journal_type = 'cash'  # default
         

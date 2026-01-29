@@ -94,6 +94,7 @@ Optimized for Dubai real estate market with AED currency support.
         
         # Wizards
         'wizards/property_data_import_wizard_views.xml',
+        'wizards/property_deposit_adjust_wizard_views.xml', # New Wizard
         'views/statement_wizard_views.xml',  # Fixed path
         
         # Report templates

@@ -442,6 +442,18 @@ class PropertyAgreement(models.Model):
         # or integrate with accounting module if available
         
         return invoice_ref
+
+    def action_adjust_deposit(self):
+        """Open wizard to adjust deposit against rent"""
+        self.ensure_one()
+        return {
+            'name': _('Adjust Deposit'),
+            'type': 'ir.actions.act_window',
+            'res_model': 'property.deposit.adjust.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_agreement_id': self.id},
+        }
     
     @api.model
     def _cron_check_expiring_agreements(self):

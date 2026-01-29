@@ -100,7 +100,26 @@ class PropertyStatement(models.Model):
             'collection_id': collection.id,
         }
         
-        return self.create(vals)
+        stmt = self.create(vals)
+        
+        # If payment is via Deposit Adjustment, we need to create a balancing DEBIT entry
+        # to show that the Deposit was used/reduced.
+        # This increases "Deposit Outstanding" (Top-up needed) or reduces "Refundable Amount".
+        if collection.payment_method == 'deposit_adjustment':
+            deposit_adjustment_vals = {
+                'tenant_id': collection.tenant_id.id,
+                'transaction_date': collection.date,
+                'reference': f"ADJ/{collection.id}",
+                'description': f"Deposit breakdown adjustment for {description}",
+                'transaction_type': 'deposit', # This affects "Deposit Outstanding"
+                'debit_amount': collection.amount_collected,
+                'credit_amount': 0.0,
+                'room_id': collection.room_id.id if collection.room_id else False,
+                'agreement_id': collection.agreement_id.id if collection.agreement_id else False,
+            }
+            self.create(deposit_adjustment_vals)
+            
+        return stmt
 
     @api.model
     def create_from_agreement(self, agreement):
