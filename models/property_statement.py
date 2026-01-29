@@ -122,6 +122,21 @@ class PropertyStatement(models.Model):
             }
             statements += self.create(vals)
         
+        # Parking Remote Deposit (if > 0)
+        if agreement.parking_remote_deposit > 0:
+            vals = {
+                'tenant_id': agreement.tenant_id.id,
+                'transaction_date': agreement.start_date,
+                'reference': f"AGR/{agreement.id}/REMOTE_DEPOSIT",
+                'description': f"Parking remote deposit for agreement {agreement.name}",
+                'transaction_type': 'deposit',
+                'debit_amount': agreement.parking_remote_deposit,
+                'credit_amount': 0.0,
+                'room_id': agreement.room_id.id,
+                'agreement_id': agreement.id,
+            }
+            statements += self.create(vals)
+        
         # Monthly rent entries - only create up to today (never future months)
         today = fields.Date.today()
         
@@ -131,6 +146,7 @@ class PropertyStatement(models.Model):
         
         current_date = agreement.start_date
         while current_date <= end_limit:
+            # 1. Rent
             vals = {
                 'tenant_id': agreement.tenant_id.id,
                 'transaction_date': current_date,
@@ -143,6 +159,37 @@ class PropertyStatement(models.Model):
                 'agreement_id': agreement.id,
             }
             statements += self.create(vals)
+            
+            # 2. Parking Charges
+            if agreement.parking_charges > 0:
+                vals = {
+                    'tenant_id': agreement.tenant_id.id,
+                    'transaction_date': current_date,
+                    'reference': f"AGR/{agreement.id}/PARKING/{current_date.strftime('%Y%m')}",
+                    'description': f"Monthly parking charges for {current_date.strftime('%B %Y')}",
+                    'transaction_type': 'parking',
+                    'debit_amount': agreement.parking_charges,
+                    'credit_amount': 0.0,
+                    'room_id': agreement.room_id.id,
+                    'agreement_id': agreement.id,
+                }
+                statements += self.create(vals)
+            
+            # 3. Monthly Other Charges
+            for charge in agreement.other_charges_ids:
+                if charge.amount > 0 and charge.frequency == 'monthly':
+                    vals = {
+                        'tenant_id': agreement.tenant_id.id,
+                        'transaction_date': current_date,
+                        'reference': f"AGR/{agreement.id}/CHARGE/{charge.charge_id.name}/{current_date.strftime('%Y%m')}",
+                        'description': f"{charge.charge_id.name} for {current_date.strftime('%B %Y')}",
+                        'transaction_type': 'other',
+                        'debit_amount': charge.amount,
+                        'credit_amount': 0.0,
+                        'room_id': agreement.room_id.id,
+                        'agreement_id': agreement.id,
+                    }
+                    statements += self.create(vals)
             
             # Move to next month
             if current_date.month == 12:
@@ -437,14 +484,14 @@ class PropertyAgreement(models.Model):
                 created_count = 0
                 
                 while current_date <= end_limit:
-                    # Check if an entry already exists for this month (safety check)
-                    existing = self.env['property.statement'].search([
+                    # 1. Rent
+                    existing_rent = self.env['property.statement'].search([
                         ('agreement_id', '=', agreement.id),
                         ('transaction_type', '=', 'rent'),
                         ('transaction_date', '=', current_date)
                     ], limit=1)
                     
-                    if not existing:
+                    if not existing_rent:
                         vals = {
                             'tenant_id': agreement.tenant_id.id,
                             'transaction_date': current_date,
@@ -459,6 +506,57 @@ class PropertyAgreement(models.Model):
                         self.env['property.statement'].create(vals)
                         created_count += 1
                         total_created += 1
+
+                    # 2. Parking Charges
+                    if agreement.parking_charges > 0:
+                        existing_parking = self.env['property.statement'].search([
+                            ('agreement_id', '=', agreement.id),
+                            ('transaction_type', '=', 'parking'),
+                            ('transaction_date', '=', current_date)
+                        ], limit=1)
+                        
+                        if not existing_parking:
+                            vals = {
+                                'tenant_id': agreement.tenant_id.id,
+                                'transaction_date': current_date,
+                                'reference': f"AGR/{agreement.id}/PARKING/{current_date.strftime('%Y%m')}",
+                                'description': f"Monthly parking charges for {current_date.strftime('%B %Y')}",
+                                'transaction_type': 'parking',
+                                'debit_amount': agreement.parking_charges,
+                                'credit_amount': 0.0,
+                                'room_id': agreement.room_id.id,
+                                'agreement_id': agreement.id,
+                            }
+                            self.env['property.statement'].create(vals)
+                            created_count += 1
+                            total_created += 1
+                    
+                    # 3. Monthly Other Charges
+                    for charge in agreement.other_charges_ids:
+                        if charge.amount > 0 and charge.frequency == 'monthly':
+                            # Check if this specific charge already exists for this month
+                            # We use the reference pattern to uniquely identify it
+                            charge_ref = f"AGR/{agreement.id}/CHARGE/{charge.charge_id.name}/{current_date.strftime('%Y%m')}"
+                            existing_charge = self.env['property.statement'].search([
+                                ('agreement_id', '=', agreement.id),
+                                ('reference', '=', charge_ref)
+                            ], limit=1)
+                            
+                            if not existing_charge:
+                                vals = {
+                                    'tenant_id': agreement.tenant_id.id,
+                                    'transaction_date': current_date,
+                                    'reference': charge_ref,
+                                    'description': f"{charge.charge_id.name} for {current_date.strftime('%B %Y')}",
+                                    'transaction_type': 'other',
+                                    'debit_amount': charge.amount,
+                                    'credit_amount': 0.0,
+                                    'room_id': agreement.room_id.id,
+                                    'agreement_id': agreement.id,
+                                }
+                                self.env['property.statement'].create(vals)
+                                created_count += 1
+                                total_created += 1
                     
                     # Move to next month
                     if current_date.month == 12:

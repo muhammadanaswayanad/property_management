@@ -349,6 +349,19 @@ class PropertyAgreement(models.Model):
                 'credit_amount': 0.0,
             })
         
+        # Create entry for parking remote deposit (if > 0)
+        if self.parking_remote_deposit > 0:
+            statement_obj.create({
+                'tenant_id': self.tenant_id.id,
+                'agreement_id': self.id,
+                'transaction_date': today,
+                'reference': f'{self.name}/REMOTE_DEPOSIT',
+                'description': f'Parking remote deposit for agreement {self.name}',
+                'transaction_type': 'deposit',
+                'debit_amount': self.parking_remote_deposit,
+                'credit_amount': 0.0,
+            })
+        
         # 4. Create entries for other charges (if > 0)
         for charge in self.other_charges_ids:
             if charge.amount > 0:
@@ -467,7 +480,7 @@ class PropertyAgreement(models.Model):
         # Check if any record is active and trying to modify critical fields
         critical_fields = [
             'tenant_id', 'room_id', 'start_date', 'end_date',
-            'rent_amount', 'deposit_amount', 'parking_charges', 'parking_deposit'
+            'rent_amount', 'deposit_amount', 'parking_charges', 'parking_remote_deposit'
         ]
         
         # Check if trying to archive active agreement
