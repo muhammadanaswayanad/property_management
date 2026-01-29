@@ -182,6 +182,33 @@ class PropertyOutstandingDues(models.Model):
                 'last_payment_date': last_payment_date,
             })
 
+    def action_view_tenant_collections(self):
+        """View all collections for this tenant"""
+        return {
+            'name': _('Tenant Collections'),
+            'view_mode': 'list,form',
+            'res_model': 'property.collection',
+            'type': 'ir.actions.act_window',
+            'domain': [('tenant_id', '=', self.tenant_id.id), ('active', '=', True)],
+            'context': {'default_tenant_id': self.tenant_id.id}
+        }
+    
+    def action_create_collection(self):
+        """Create a new collection for this tenant"""
+        return {
+            'name': _('Create Collection'),
+            'view_mode': 'form',
+            'res_model': 'property.collection',
+            'type': 'ir.actions.act_window',
+            'target': 'new',
+            'context': {
+                'default_tenant_id': self.tenant_id.id,
+                'default_room_id': self.room_id.id,
+                'default_agreement_id': self.agreement_id.id,
+                'default_amount_collected': self.expected_monthly_amount,
+            }
+        }
+
     @api.model
     def cron_update_outstanding_dues(self):
         """Cron job to update outstanding dues daily"""
