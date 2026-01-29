@@ -176,6 +176,10 @@ class PropertyCollection(models.Model):
                 _logger = logging.getLogger(__name__)
                 _logger.warning(f"Could not register payment for collection {collection.name}: {str(e)}")
         
+        # Trigger recomputation of outstanding dues
+        if collection.tenant_id:
+            self.env['property.outstanding.dues'].recompute_for_tenant(collection.tenant_id.id)
+        
         return collection
     
     def write(self, vals):
@@ -244,6 +248,14 @@ class PropertyCollection(models.Model):
             rooms_to_recompute = self.mapped('room_id')
             if rooms_to_recompute:
                 rooms_to_recompute._compute_payment_stats()
+        
+        return result
+        
+        # Trigger recomputation of outstanding dues if relevant fields changed
+        if 'status' in vals or 'amount_collected' in vals or 'collection_type' in vals:
+            for record in self:
+                if record.tenant_id:
+                    self.env['property.outstanding.dues'].recompute_for_tenant(record.tenant_id.id)
         
         return result
 

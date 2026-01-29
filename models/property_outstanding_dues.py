@@ -128,136 +128,59 @@ class PropertyOutstandingDues(models.Model):
         ])
         
         for tenant in tenants:
-            agreement = tenant.current_agreement_id
-            if not agreement or agreement.state != 'active' or not agreement.active:
-                continue
+            self._create_for_tenant(tenant)
+
+    @api.model
+    def recompute_for_tenant(self, tenant_id):
+        """Recompute outstanding dues for a specific tenant"""
+        if not tenant_id:
+            return
             
-            # Calculate outstanding amounts
-            rent_outstanding = self._calculate_rent_outstanding(tenant, agreement)
-            deposit_outstanding = self._calculate_deposit_outstanding(tenant, agreement)
-            parking_outstanding = self._calculate_parking_outstanding(tenant, agreement)
-            other_charges_outstanding = self._calculate_other_charges_outstanding(tenant, agreement)
+        tenant = self.env['property.tenant'].browse(tenant_id)
+        if not tenant.exists():
+            return
             
-            # Get last payment date
-            last_collection = self.env['property.collection'].search([
-                ('tenant_id', '=', tenant.id),
-                ('active', '=', True),
-                ('agreement_id.active', '=', True)  # Exclude archived agreements
-            ], limit=1, order='date desc')
-            
-            last_payment_date = last_collection.date if last_collection else agreement.start_date
-            
-            # Create outstanding dues record only if there are outstanding amounts
-            if any([rent_outstanding, deposit_outstanding, parking_outstanding, other_charges_outstanding]):
-                self.create({
-                    'tenant_id': tenant.id,
-                    'room_id': tenant.current_room_id.id,
-                    'agreement_id': agreement.id,
-                    'rent_outstanding': rent_outstanding,
-                    'deposit_outstanding': deposit_outstanding,
-                    'parking_outstanding': parking_outstanding,
-                    'other_charges_outstanding': other_charges_outstanding,
-                    'last_payment_date': last_payment_date,
-                })
-    
-    def _calculate_rent_outstanding(self, tenant, agreement):
-        """Calculate outstanding rent amount from unpaid invoices"""
-        # Query unpaid rent invoices for this tenant/agreement
-        unpaid_invoices = self.env['account.move'].search([
+        # Delete existing record for this tenant
+        existing = self.search([('tenant_id', '=', tenant.id)])
+        existing.unlink()
+        
+        # Create new record if eligible
+        if tenant.active and tenant.status == 'active' and tenant.current_agreement_id:
+            self._create_for_tenant(tenant)
+
+    def _create_for_tenant(self, tenant):
+        """Calculate and create outstanding dues record for a single tenant"""
+        agreement = tenant.current_agreement_id
+        if not agreement or agreement.state != 'active' or not agreement.active:
+            return
+        
+        # Calculate outstanding amounts
+        rent_outstanding = self._calculate_rent_outstanding(tenant, agreement)
+        deposit_outstanding = self._calculate_deposit_outstanding(tenant, agreement)
+        parking_outstanding = self._calculate_parking_outstanding(tenant, agreement)
+        other_charges_outstanding = self._calculate_other_charges_outstanding(tenant, agreement)
+        
+        # Get last payment date
+        last_collection = self.env['property.collection'].search([
             ('tenant_id', '=', tenant.id),
-            ('agreement_id', '=', agreement.id),
-            ('agreement_id.active', '=', True),  # Exclude archived agreements
-            ('move_type', '=', 'out_invoice'),
-            ('invoice_type', '=', 'rent'),
-            ('state', '=', 'posted'),
-            ('payment_state', 'in', ['not_paid', 'partial'])
-        ])
+            ('active', '=', True),
+            ('agreement_id.active', '=', True)  # Exclude archived agreements
+        ], limit=1, order='date desc')
         
-        # Sum the unpaid amounts (amount_residual)
-        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
+        last_payment_date = last_collection.date if last_collection else agreement.start_date
         
-        return max(0, total_outstanding)
-    
-    def _calculate_deposit_outstanding(self, tenant, agreement):
-        """Calculate outstanding deposit amount from unpaid invoices"""
-        # Query unpaid deposit invoices for this tenant/agreement
-        unpaid_invoices = self.env['account.move'].search([
-            ('tenant_id', '=', tenant.id),
-            ('agreement_id', '=', agreement.id),
-            ('agreement_id.active', '=', True),  # Exclude archived agreements
-            ('move_type', '=', 'out_invoice'),
-            ('invoice_type', '=', 'deposit'),
-            ('state', '=', 'posted'),
-            ('payment_state', 'in', ['not_paid', 'partial'])
-        ])
-        
-        # Sum the unpaid amounts
-        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
-        
-        return max(0, total_outstanding)
-    
-    def _calculate_parking_outstanding(self, tenant, agreement):
-        """Calculate outstanding parking charges from unpaid invoices"""
-        # Query unpaid parking invoices for this tenant/agreement
-        unpaid_invoices = self.env['account.move'].search([
-            ('tenant_id', '=', tenant.id),
-            ('agreement_id', '=', agreement.id),
-            ('agreement_id.active', '=', True),  # Exclude archived agreements
-            ('move_type', '=', 'out_invoice'),
-            ('invoice_type', 'in', ['parking', 'parking_charges']),
-            ('state', '=', 'posted'),
-            ('payment_state', 'in', ['not_paid', 'partial'])
-        ])
-        
-        # Sum the unpaid amounts
-        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
-        
-        return max(0, total_outstanding)
-    
-    def _calculate_other_charges_outstanding(self, tenant, agreement):
-        """Calculate outstanding other charges from unpaid invoices"""
-        # Query unpaid other charges invoices for this tenant/agreement
-        unpaid_invoices = self.env['account.move'].search([
-            ('tenant_id', '=', tenant.id),
-            ('agreement_id', '=', agreement.id),
-            ('agreement_id.active', '=', True),  # Exclude archived agreements
-            ('move_type', '=', 'out_invoice'),
-            ('invoice_type', 'in', ['maintenance', 'utility', 'penalty', 'other']),
-            ('state', '=', 'posted'),
-            ('payment_state', 'in', ['not_paid', 'partial'])
-        ])
-        
-        # Sum the unpaid amounts
-        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
-        
-        return max(0, total_outstanding)
-    
-    def action_view_tenant_collections(self):
-        """View all collections for this tenant"""
-        return {
-            'name': _('Tenant Collections'),
-            'view_mode': 'list,form',
-            'res_model': 'property.collection',
-            'type': 'ir.actions.act_window',
-            'domain': [('tenant_id', '=', self.tenant_id.id), ('active', '=', True)],
-            'context': {'default_tenant_id': self.tenant_id.id}
-        }
-    
-    def action_create_collection(self):
-        """Create a new collection for this tenant"""
-        return {
-            'name': _('Create Collection'),
-            'view_mode': 'form',
-            'res_model': 'property.collection',
-            'type': 'ir.actions.act_window',
-            'target': 'new',
-            'context': {
-                'default_tenant_id': self.tenant_id.id,
-                'default_room_id': self.room_id.id,
-                'default_agreement_id': self.agreement_id.id,
-                'default_amount_collected': self.expected_monthly_amount,
-            }
-        }
+        # Create outstanding dues record only if there are outstanding amounts
+        if any([rent_outstanding, deposit_outstanding, parking_outstanding, other_charges_outstanding]):
+            self.create({
+                'tenant_id': tenant.id,
+                'room_id': tenant.current_room_id.id,
+                'agreement_id': agreement.id,
+                'rent_outstanding': rent_outstanding,
+                'deposit_outstanding': deposit_outstanding,
+                'parking_outstanding': parking_outstanding,
+                'other_charges_outstanding': other_charges_outstanding,
+                'last_payment_date': last_payment_date,
+            })
 
     @api.model
     def cron_update_outstanding_dues(self):

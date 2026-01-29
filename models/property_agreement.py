@@ -297,6 +297,9 @@ class PropertyAgreement(models.Model):
             
             # Create monthly invoice reference
             record._create_monthly_invoice_reference()
+            
+            # Trigger recomputation of outstanding dues
+            self.env['property.outstanding.dues'].recompute_for_tenant(record.tenant_id.id)
     
     def _create_initial_statement_entries(self):
         """Create initial statement entries for agreement dues"""
@@ -376,6 +379,9 @@ class PropertyAgreement(models.Model):
             })
             
             record.write({'state': 'terminated'})
+            
+            # Trigger recomputation of outstanding dues
+            self.env['property.outstanding.dues'].recompute_for_tenant(record.tenant_id.id)
         return True
     
     def action_clean_and_terminate(self):
@@ -497,6 +503,11 @@ class PropertyAgreement(models.Model):
             if tenants_to_recompute:
                 # Force recomputation of tenant stats
                 tenants_to_recompute._compute_agreement_stats()
+        
+        if any(f in vals for f in ['rent_amount', 'deposit_amount', 'parking_charges', 'active', 'state']):
+            for record in self:
+                if record.tenant_id:
+                    self.env['property.outstanding.dues'].recompute_for_tenant(record.tenant_id.id)
         
         return result
     
