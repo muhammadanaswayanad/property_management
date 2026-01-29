@@ -182,6 +182,78 @@ class PropertyOutstandingDues(models.Model):
                 'last_payment_date': last_payment_date,
             })
 
+    def _calculate_rent_outstanding(self, tenant, agreement):
+        """Calculate outstanding rent amount from unpaid invoices"""
+        # Query unpaid rent invoices for this tenant/agreement
+        unpaid_invoices = self.env['account.move'].search([
+            ('tenant_id', '=', tenant.id),
+            ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
+            ('move_type', '=', 'out_invoice'),
+            ('invoice_type', '=', 'rent'),
+            ('state', '=', 'posted'),
+            ('payment_state', 'in', ['not_paid', 'partial'])
+        ])
+        
+        # Sum the unpaid amounts (amount_residual)
+        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
+        
+        return max(0, total_outstanding)
+    
+    def _calculate_deposit_outstanding(self, tenant, agreement):
+        """Calculate outstanding deposit amount from unpaid invoices"""
+        # Query unpaid deposit invoices for this tenant/agreement
+        unpaid_invoices = self.env['account.move'].search([
+            ('tenant_id', '=', tenant.id),
+            ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
+            ('move_type', '=', 'out_invoice'),
+            ('invoice_type', '=', 'deposit'),
+            ('state', '=', 'posted'),
+            ('payment_state', 'in', ['not_paid', 'partial'])
+        ])
+        
+        # Sum the unpaid amounts
+        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
+        
+        return max(0, total_outstanding)
+    
+    def _calculate_parking_outstanding(self, tenant, agreement):
+        """Calculate outstanding parking charges from unpaid invoices"""
+        # Query unpaid parking invoices for this tenant/agreement
+        unpaid_invoices = self.env['account.move'].search([
+            ('tenant_id', '=', tenant.id),
+            ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
+            ('move_type', '=', 'out_invoice'),
+            ('invoice_type', 'in', ['parking', 'parking_charges']),
+            ('state', '=', 'posted'),
+            ('payment_state', 'in', ['not_paid', 'partial'])
+        ])
+        
+        # Sum the unpaid amounts
+        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
+        
+        return max(0, total_outstanding)
+    
+    def _calculate_other_charges_outstanding(self, tenant, agreement):
+        """Calculate outstanding other charges from unpaid invoices"""
+        # Query unpaid other charges invoices for this tenant/agreement
+        unpaid_invoices = self.env['account.move'].search([
+            ('tenant_id', '=', tenant.id),
+            ('agreement_id', '=', agreement.id),
+            ('agreement_id.active', '=', True),  # Exclude archived agreements
+            ('move_type', '=', 'out_invoice'),
+            ('invoice_type', 'in', ['maintenance', 'utility', 'penalty', 'other']),
+            ('state', '=', 'posted'),
+            ('payment_state', 'in', ['not_paid', 'partial'])
+        ])
+        
+        # Sum the unpaid amounts
+        total_outstanding = sum(unpaid_invoices.mapped('amount_residual'))
+        
+        return max(0, total_outstanding)
+
     def action_view_tenant_collections(self):
         """View all collections for this tenant"""
         return {
